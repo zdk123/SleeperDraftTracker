@@ -160,6 +160,19 @@ class FakeSpreadsheet {
     return sheet;
   }
 
+  /** Insertion order, which is what the real API returns. */
+  getSheets() {
+    return [...this.sheets.values()];
+  }
+
+  deleteSheet(sheet) {
+    const name = typeof sheet === 'string' ? sheet : sheet.getName();
+    if (!this.sheets.has(name)) throw new Error(`no such sheet: ${name}`);
+    // Google refuses to leave a spreadsheet with no sheets at all.
+    if (this.sheets.size === 1) throw new Error('cannot delete the only sheet');
+    this.sheets.delete(name);
+  }
+
   /** Test-only view: every tab as plain rows, including trailing blanks. */
   dump() {
     const out = {};

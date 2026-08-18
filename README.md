@@ -214,6 +214,21 @@ left sitting on a screen that's being mirrored to a television.
 The same link is the fastest way to recover if the draft laptop dies: open it on the replacement,
 then *Backup → List drafts in the sheet* to pull the draft back down.
 
+#### Clearing out test drafts
+
+Testing leaves six tabs per draft behind. [`apps-script/Reset.gs`](apps-script/Reset.gs) removes
+them. It is **not part of the app** — nothing calls it, and adding it to your Apps Script project
+exposes nothing, since a web app deployment only ever reaches `doGet` and `doPost`. No re-deploy
+needed either; it's run by hand from the editor.
+
+Add it as a new script file, run `listDraftTabs` first — it only writes a report — and check what it
+plans to remove. Then set `CONFIRM = true` and run `deleteDraftTabs`. Set `CONFIRM` back afterwards.
+
+It only touches tabs whose name starts with a date, which is how every draft key begins. A tab of
+your own called `Weekly Log` or `Config` is left alone; `scripts/test-reset.mjs` pins that, since
+deleting the wrong tab is the one mistake here with no undo. `DRAFT_KEYS` narrows it to named
+drafts if you want to keep some.
+
 #### How drafts are kept apart
 
 Every draft gets a key when you start it: the date, the name you typed, and a short random
@@ -430,6 +445,7 @@ node scripts/test.mjs                                   # draft rules, budgets, 
 node scripts/test-restore.mjs                           # the compare/restore recovery paths
 node scripts/test-apps-script.mjs                       # runs apps-script/Code.gs against a fake sheet
 node scripts/test-viewer.mjs                            # the viewer's poll loop and the share link
+node scripts/test-reset.mjs                             # the one script that deletes anything
 node server.js &                                        # then, in another shell:
 node --experimental-websocket scripts/browser-test.mjs  # drives the real UI in headless Chrome
 node --experimental-websocket scripts/offline-test.mjs  # drives the standalone file over file://
