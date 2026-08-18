@@ -16,13 +16,42 @@ you use the exports (or the Google Sheet) to type the results into Sleeper.
 
 ## The 60-second version for draft night
 
-1. Double-click **`start-mac.command`** (or `start-windows.bat`).
-2. A browser opens at `http://localhost:8787`. That's the board — mirror it to the TV.
+1. Open the board — **double-click `DraftBoard-offline.html`** (works on any computer, nothing to
+   install), or open your hosted link if you set one up. See [Three ways to run it](#three-ways-to-run-it).
+2. Mirror the screen to the TV.
 3. Type each pick as it happens: player name → pick from the list → team → price → Enter.
-4. If the status pill goes red or says "Offline": **keep going.** Every pick is saved on the laptop
-   the instant you enter it. The red only means the spreadsheet copy is behind, and it catches up
-   by itself.
+4. If the status pill goes red or says "Offline": **keep going.** Every pick is saved on the
+   computer the instant you enter it. Red only means the spreadsheet copy is behind, and it catches
+   up by itself.
 5. When the draft is done, click **Export → Rosters (text)** and use it to fill in Sleeper.
+
+---
+
+## Three ways to run it
+
+All three are the same app with the same features. They differ only in what has to be installed and
+whether picks get copied to a Google Sheet.
+
+| | What you do | Needs installing | Needs internet | Google Sheet backup |
+|---|---|---|---|---|
+| **Standalone file** | Double-click `DraftBoard-offline.html` | Nothing | No | No |
+| **Hosted** | Open your `*.vercel.app` link | Nothing | Yes | Yes |
+| **Local server** | Double-click `start-windows.bat` | Node.js | No (except to sync) | Yes |
+
+**On Windows, and want it simple: use the standalone file.** It's one self-contained HTML file —
+double-click it and the board opens in Edge or Chrome. No Node, no install, no terminal window, and
+it keeps working with the wifi off. Everything is saved in the browser and exports normally. The
+only thing it can't do is copy picks to a Google Sheet, because that needs a server to hold the
+credentials.
+
+**Want the Google Sheet backup too?** Deploy it once to Vercel (free, ~10 minutes, instructions
+below) and just open the link on draft night. Keep `DraftBoard-offline.html` on the desktop as a
+backup in case the venue's wifi is bad.
+
+`start-windows.bat` is only worth it if you want the sheet backup *without* hosting. If Node isn't
+installed, the launcher notices and opens the standalone file for you instead.
+
+> Rebuild the standalone file after changing anything: `node scripts/build-offline.mjs`
 
 ---
 
@@ -54,22 +83,47 @@ you use the exports (or the Google Sheet) to type the results into Sleeper.
 
 ## Setup before draft night
 
-### Minimum (no Google Sheet, works offline)
+### Minimum (nothing to install, works with no internet)
 
-1. Install **Node.js 20 or newer** from [nodejs.org](https://nodejs.org) — pick the LTS version.
-   Check it worked: open Terminal and run `node --version`.
-2. Put this folder somewhere you'll find it, like the Desktop.
-3. **macOS only, do this in advance:** right-click `start-mac.command` → Open → Open. macOS blocks
-   double-clicked scripts the first time, and you don't want to discover that at 7pm.
-4. Double-click the launcher. A browser should open with the setup screen.
-5. Fill in teams, budget, roster spots, and shuffle the nomination order. Click **Start draft**.
+1. Copy **`DraftBoard-offline.html`** onto the computer that'll run the draft — desktop is fine.
+   It's one file; nothing else is needed.
+2. Double-click it. It opens in your browser on the setup screen.
+3. Fill in teams, budget, roster spots, and shuffle the nomination order. Click **Start draft**.
 
-That's genuinely all that's required. Everything below is optional insurance.
+That's genuinely it. Everything below is optional insurance.
+
+> **Use the same browser every time.** The draft is saved inside whichever browser you opened the
+> file with, so if you set up in Edge, run the draft in Edge. (Also avoid a private/incognito
+> window — those throw the data away when closed.)
+
+<details>
+<summary><b>Optional: the local server instead (needs Node.js)</b></summary>
+
+Only needed if you want the Google Sheet backup but don't want to host the app.
+
+1. Install **Node.js 20 or newer** from [nodejs.org](https://nodejs.org) — the LTS version.
+2. Double-click `start-windows.bat` (Windows) or `start-mac.command` (macOS). On macOS the first
+   run needs right-click → Open → Open to get past Gatekeeper — **do that in advance**, not at 7pm.
+3. A terminal window opens and stays open; the browser opens at `http://localhost:8787`. Leave the
+   terminal window alone until the draft is over.
+
+</details>
 
 ### Optional: Google Sheet backup
 
 This copies every pick to a spreadsheet as you go, so the draft survives even if the laptop dies.
 It also gives you a `Rosters` tab that's laid out for typing into Sleeper afterward.
+
+**How it works, and what it requires.** Writing to a Google Sheet needs a credential, and a
+credential can't live in a web page — anyone could read it. So the app keeps it on a server: the
+browser sends the draft to the app's own `/api/sync`, and *that* signs the request to Google. Which
+means the sheet backup works from the **hosted (Vercel)** version and the **local server**, but
+**not** from the standalone `DraftBoard-offline.html`, since there's no server in that mode. The
+standalone file saves in the browser and exports to a file instead.
+
+Sync itself is best-effort and never blocks you: picks are written to the browser first, then the
+whole draft is pushed to the sheet a second or so later. If the write fails, the pill goes red, the
+app retries, and you carry on typing.
 
 <details>
 <summary><b>Google Cloud setup (~15 minutes, once)</b></summary>
@@ -134,8 +188,8 @@ Then restart the app, paste the token into the setup screen's **Access token** b
 <details>
 <summary><b>Optional: hosting it on Vercel</b></summary>
 
-Useful if you'd rather open a URL than run a launcher — but keep the local launcher working as a
-backup for venue wifi trouble.
+The nicest setup for a Windows machine: nothing to install, and the Google Sheet backup works. Keep
+`DraftBoard-offline.html` on the desktop as the wifi-failure backup.
 
 1. Push this folder to a GitHub repo, then import it at [vercel.com](https://vercel.com).
 2. Framework Preset **Other**, Build Command **empty**, Output Directory **`public`**.
@@ -153,7 +207,8 @@ backup for venue wifi trouble.
 
 On the actual laptop, actual browser, actual TV:
 
-- [ ] Launcher opens the board without a Gatekeeper/SmartScreen prompt.
+- [ ] The board opens the way you plan to open it on the night (and note *which browser*, since
+      that's where the draft is saved).
 - [ ] Screen mirroring works and you can read the board from where people will be sitting.
 - [ ] Enter a dozen fake picks. Try one that's over a team's max bid — it should refuse.
 - [ ] Turn the wifi **off** and keep entering picks. Everything should still work.
@@ -161,7 +216,8 @@ On the actual laptop, actual browser, actual TV:
 - [ ] If you set up the sheet: turn wifi back on and watch the status pill go green.
 - [ ] Click Export and check the roster list looks right.
 - [ ] Laptop set to never sleep, and plugged in.
-- [ ] Re-run `node scripts/build-players.mjs` the week of the draft to refresh the player list.
+- [ ] The week of the draft, refresh the player list and rebuild the standalone file:
+      `node scripts/build-players.mjs && node scripts/build-offline.mjs`
 
 ---
 
@@ -208,9 +264,16 @@ If you set up the sheet, the `Rosters` tab has the same thing, already laid out.
 
 ## If something goes wrong
 
-**The browser won't open / the page is blank.** Check the terminal window the launcher opened. If it
-says Node isn't installed, install it from nodejs.org. Otherwise open `http://localhost:8787`
-manually.
+**Nothing opens / the page is blank.** Fall back to double-clicking `DraftBoard-offline.html` — it
+has no moving parts. If you were using the launcher, check the terminal window it opened; if it says
+Node isn't installed, either install it from nodejs.org or just use the standalone file.
+
+**Windows warns about the `.bat` file.** SmartScreen flags downloaded scripts. Use the standalone
+HTML file instead, or click "More info" → "Run anyway".
+
+**The draft vanished.** Almost always the wrong browser or a private window — the draft is stored in
+the specific browser you set it up in. Reopen the same one. Failing that, restore from the Google
+Sheet or a JSON backup.
 
 **"Sheet behind" or a red pill.** Keep entering picks — nothing is lost. Afterward, open **Backup →
 Check the sheet's copy** to see what happened. The usual cause is that the sheet was never shared
@@ -255,9 +318,22 @@ runs on a laptop with nothing but Node installed.
   screen.
 
 ```bash
-node scripts/test.mjs                                  # draft rules, budgets, sheet mapping
-node scripts/test-sync.mjs                             # server handlers vs. a stubbed Google API
-node server.js &                                       # then, in another shell:
-node --experimental-websocket scripts/browser-test.mjs # drives the real UI in headless Chrome
-node scripts/build-players.mjs                         # refresh public/data/players.json
+node scripts/test.mjs                                   # draft rules, budgets, sheet mapping
+node scripts/test-sync.mjs                              # server handlers vs. a stubbed Google API
+node server.js &                                        # then, in another shell:
+node --experimental-websocket scripts/browser-test.mjs  # drives the real UI in headless Chrome
+node --experimental-websocket scripts/offline-test.mjs  # drives the standalone file over file://
+
+node scripts/build-players.mjs                          # refresh public/data/players.json
+node scripts/build-offline.mjs                          # rebuild DraftBoard-offline.html
 ```
+
+`build-offline.mjs` inlines every asset into one file. Note it replaces via a function, never a
+string — a string replacement would interpret `$$`/`` $` ``/`$'` inside the code being inlined, which
+silently corrupts `` `$${...}` `` in utils.js and can splice the document into itself.
+
+**Cross-origin notes** (verified from a `file://` page): the standalone build makes no requests for
+its own assets, so nothing can be blocked. Sleeper's read API sends `Access-Control-Allow-Origin: *`,
+which covers the `null` origin a `file://` page sends, so the optional league-name prefill still
+works there when online. The `/api/*` calls simply fail in standalone mode and are caught — the app
+reports "Local only" rather than throwing.

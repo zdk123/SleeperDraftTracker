@@ -16,6 +16,15 @@
   App.players = {
     async load() {
       if (loaded) return { ok: true, count: players.length };
+
+      // The single-file build inlines the list, so it works from a plain
+      // double-clicked file with no server and no network at all.
+      if (window.__PLAYERS__ && Array.isArray(window.__PLAYERS__.players)) {
+        players = window.__PLAYERS__.players;
+        loaded = true;
+        return { ok: true, count: players.length, generatedAt: window.__PLAYERS__.generatedAt };
+      }
+
       try {
         const res = await fetch('data/players.json', { cache: 'force-cache' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
