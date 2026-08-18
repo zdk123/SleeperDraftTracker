@@ -17,7 +17,7 @@
 
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir, networkInterfaces } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
@@ -946,11 +946,21 @@ async function scenarioViewerFollowsAlong() {
   const app = startAppServer(8794);
   await waitForServer(8794, 'app server');
 
+  // Reached by LAN address rather than localhost on purpose. Sharing is refused
+  // from localhost -- a link to it would point at each guest's own phone -- so
+  // this is the only way to exercise the share link and the board's QR code the
+  // way they actually behave when hosted.
+  const lan = Object.values(networkInterfaces())
+    .flat()
+    .find((i) => i && i.family === 'IPv4' && !i.internal);
+  const origin = lan ? `http://${lan.address}:8794/` : 'http://localhost:8794/';
+  if (!lan) console.log('    (no LAN address; sharing checks will be skipped)');
+
   const browser = new Browser();
   await browser.launch(9407);
   let phone = null;
   try {
-    await browser.goto('http://localhost:8794/');
+    await browser.goto(origin);
     await browser.waitFor('document.querySelectorAll(".team-row").length > 0', 'setup screen');
     await configureSheet(browser, script.url, 'operator-secret', 'guest-secret');
     await setupDraft(browser);
@@ -971,6 +981,40 @@ async function scenarioViewerFollowsAlong() {
       link.includes('/view.html#v1.'), link.slice(0, 60));
     check(name, 'and carries no secret in the query string',
       !link.slice(0, link.indexOf('#')).includes('guest-secret'));
+
+    if (lan) {
+      // The QR on the board: present, small, and holding the same link.
+      const qr = JSON.parse(await browser.eval(`(() => {
+        const host = document.getElementById('board-qr');
+        const svg = host.querySelector('svg');
+        return JSON.stringify({
+          hidden: host.hidden,
+          hasSvg: !!svg,
+          viewBox: svg ? svg.getAttribute('viewBox') : '',
+          paths: svg ? svg.querySelectorAll('path').length : 0,
+          link: DraftApp.views.shareCode.link(),
+        });
+      })()`));
+      check(name, 'the board shows a QR code', !qr.hidden && qr.hasSvg, JSON.stringify(qr));
+      check(name, 'the QR encodes exactly the share link', qr.link === link);
+      // 53 modules + 4 of quiet zone each side. Bigger means smaller modules on
+      // the TV, which is what costs scanning distance.
+      const side = Number((qr.viewBox || '').split(' ')[2]);
+      check(name, 'the code is small enough to scan from across a room',
+        side > 0 && side <= 65, `${side} modules across including the quiet zone`);
+
+      // Enlarging it is the "everyone scan now" moment.
+      await browser.eval(`document.querySelector('.board-qr__btn').click()`);
+      await sleep(150);
+      check(name, 'clicking it opens a full-screen code',
+        (await browser.eval(`!!document.querySelector('.qr-overlay svg')`)) === true);
+      await browser.eval(`(() => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      })()`);
+      await sleep(150);
+      check(name, 'and Escape puts the board back',
+        (await browser.eval(`!!document.querySelector('.qr-overlay')`)) === false);
+    }
 
     phone = await browser.openSecondTab(link);
     await phone.waitFor('!!(window.DraftApp && DraftApp.store.exists())', 'the viewer to load the draft');

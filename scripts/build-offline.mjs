@@ -46,11 +46,25 @@ async function main() {
     html = inline(html, tag, `<style>\n${css}\n</style>`);
   }
 
+  // Assets with no possible use from a file:// page. The QR encoder is 57KB
+  // that could never run here: a share link needs a web address other people
+  // can open, and this build has none -- shareLink.availability() refuses on
+  // protocol alone. A stub keeps shareCode.js from throwing on a missing global
+  // while costing nothing.
+  const UNUSED_OFFLINE = {
+    'js/vendor/qrcode.js':
+      '// QR encoding is omitted from the offline build: a file:// page has no\n' +
+      '// address to put in a link, so sharing is refused before this would run.\n' +
+      'window.qrcode = function () {\n' +
+      '  throw new Error("QR codes need the hosted version of the draft board.");\n' +
+      '};',
+  };
+
   // Inline scripts, in the order index.html already declares.
   const scriptTags = [...html.matchAll(/<script src="([^"]+)"><\/script>/g)];
   let first = true;
   for (const [tag, src] of scriptTags) {
-    const js = await read(src);
+    const js = UNUSED_OFFLINE[src] ?? (await read(src));
     // The player list has to be in place before players.js runs.
     const preamble = first ? `window.__PLAYERS__ = ${safeJson(players)};\n` : '';
     first = false;

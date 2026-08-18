@@ -424,3 +424,132 @@
     gap: 1.25rem;
   }
 }
+
+/* --- share code ------------------------------------------------------------ */
+
+/* Small by default: a code big enough to scan from the sofa is roughly a fifth
+   of the screen, which is too much to give up permanently on a board already
+   fitting a dozen team columns. Anyone can walk up and scan this one; for the
+   "everyone scan now" moment it opens full-screen instead. */
+
+.board-qr {
+  position: fixed;
+  right: 0.9rem;
+  bottom: 0.9rem;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.board-qr__btn {
+  display: block;
+  padding: 0.3rem;
+  background: #fff; /* never themed: an inverted QR will not scan */
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  line-height: 0;
+}
+
+.board-qr__btn svg {
+  width: 84px;
+  height: 84px;
+  display: block;
+}
+
+.board-qr__btn:hover,
+.board-qr__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.board-qr__cap {
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  background: var(--bg);
+  padding: 0 0.3rem;
+  border-radius: 3px;
+}
+
+/* The scanning moment. Sized in vmin so the code is as large as the shorter
+   screen dimension allows, which is what buys the scanning distance. */
+
+.qr-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.qr-overlay__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  text-align: center;
+  padding: 1rem;
+}
+
+.qr-overlay__title {
+  margin: 0;
+  font-size: clamp(1.5rem, 4vmin, 3rem);
+}
+
+.qr-overlay__code {
+  background: #fff;
+  padding: 0.75rem;
+  border-radius: 10px;
+  line-height: 0;
+}
+
+.qr-overlay__code svg {
+  width: min(62vmin, 620px);
+  height: min(62vmin, 620px);
+  display: block;
+}
+
+.qr-overlay__sub {
+  margin: 0;
+  max-width: 34rem;
+  font-size: clamp(0.9rem, 1.8vmin, 1.25rem);
+  color: var(--text-dim);
+}
+
+.qr-overlay__dismiss {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+
+/* The panel's own copy, for checking it looks right before showing the room. */
+.share-qr {
+  background: #fff;
+  padding: 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  width: fit-content;
+  margin: 0 auto 0.75rem;
+  line-height: 0;
+}
+
+.share-qr svg {
+  width: 190px;
+  height: 190px;
+  display: block;
+}
+
+@media print {
+  .board-qr,
+  .qr-overlay {
+    display: none !important;
+  }
+}

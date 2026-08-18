@@ -354,5 +354,106 @@ await test('the token rides in the fragment, never the query string', async () =
   assert.ok(!link.includes('?'), 'nothing should be in the query string at all');
 });
 
+await test('the Apps Script boilerplate is stripped, then rebuilt exactly', async () => {
+  // 40 characters of fixed prefix/suffix, which is the difference between a
+  // 61x61 QR and a 53x53 one.
+  const { shareLink } = harness().App;
+  const url = 'https://script.google.com/macros/s/AKfycbwevOIYUnglJs93f9XQOh_a5mfSBHxONWU4ZMi0Obn-gMBi5J5DP4/exec';
+  const encoded = shareLink.encode({ url, token: 't', draftKey: 'k' });
+  assert.equal(shareLink.decode(encoded).url, url, 'the URL must survive the round trip');
+  assert.ok(!encoded.includes('script.google.com'), 'the boilerplate should not be in the payload');
+});
+
+await test('a non-Apps-Script URL travels whole rather than being mangled', async () => {
+  const { shareLink } = harness().App;
+  const url = 'http://localhost:8791/';
+  assert.equal(shareLink.decode(shareLink.encode({ url, token: 't', draftKey: 'k' })).url, url);
+});
+
+console.log('\nWhere a link is worth handing out');
+
+await test('sharing is refused from file:// and from localhost', async () => {
+  const { shareLink } = harness().App;
+  const base = { scriptUrl: 'https://script/exec', viewToken: 'v', writeToken: 'w' };
+  assert.equal(shareLink.availability({ ...base, protocol: 'file:', hostname: '' }).reason, 'file');
+  assert.equal(shareLink.availability({ ...base, protocol: 'http:', hostname: 'localhost' }).reason, 'local');
+  assert.equal(shareLink.availability({ ...base, protocol: 'http:', hostname: '127.0.0.1' }).reason, 'local');
+});
+
+await test('sharing is refused without a sheet or a viewer token', async () => {
+  const { shareLink } = harness().App;
+  const base = { protocol: 'https:', hostname: 'draft.vercel.app' };
+  assert.equal(shareLink.availability({ ...base, scriptUrl: '', viewToken: 'v' }).reason, 'no-sheet');
+  assert.equal(shareLink.availability({ ...base, scriptUrl: 'https://s/exec', viewToken: '' }).reason, 'no-token');
+});
+
+await test('sharing is refused when the viewer token IS the write token', async () => {
+  // Otherwise the link would let anyone holding it overwrite the draft.
+  const { shareLink } = harness().App;
+  const res = shareLink.availability({
+    protocol: 'https:', hostname: 'draft.vercel.app',
+    scriptUrl: 'https://s/exec', viewToken: 'same', writeToken: 'same',
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.reason, 'same-token');
+});
+
+await test('a properly configured hosted app can share', async () => {
+  const { shareLink } = harness().App;
+  assert.deepEqual(
+    shareLink.availability({
+      protocol: 'https:', hostname: 'draft.vercel.app',
+      scriptUrl: 'https://s/exec', viewToken: 'guest', writeToken: 'operator',
+    }),
+    { ok: true, reason: '' }
+  );
+});
+
+console.log('\nThe QR code');
+
+await test('a real share link fits in a code that can be scanned across a room', async () => {
+  // Module count drives scan distance: the code has to be about 10-20x its own
+  // width away from the camera. Every extra version makes each module smaller
+  // for the same area on the TV, so this is a budget, not a formality.
+  const { readFileSync } = await import('node:fs');
+  const { join, dirname } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+  const win = {};
+  new Function('window', readFileSync(join(ROOT, 'public/js/vendor/qrcode.js'), 'utf8') +
+    ';window.qrcode = qrcode;')(win);
+
+  const { shareLink } = harness().App;
+  const link = shareLink.build({
+    origin: 'https://sleeperdrafttracker.vercel.app/',
+    url: 'https://script.google.com/macros/s/AKfycbwevOIYUnglJs93f9XQOh_a5mfSBHxONWU4ZMi0Obn-gMBi5J5DP4-ec3FHbxiSLpujVA/exec',
+    token: 'guest-secret-9f3a',
+    draftKey: '2026-08-24 Kurtz League x9a2',
+  });
+
+  const qr = win.qrcode(0, 'L');
+  qr.addData(link);
+  qr.make();
+  assert.ok(
+    qr.getModuleCount() <= 57,
+    `a realistic link needs ${qr.getModuleCount()} modules; over 57 and it gets hard to scan from a sofa`
+  );
+});
+
+await test('the vendored encoder is unmodified upstream code', async () => {
+  // It is vendored precisely so nobody hand-rolls Reed-Solomon. Patching it in
+  // place would make it unupdatable and is how a subtle, unscannable-code bug
+  // gets introduced.
+  const { readFileSync } = await import('node:fs');
+  const { join, dirname } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const src = readFileSync(join(ROOT, 'public/js/vendor/qrcode.js'), 'utf8');
+  assert.ok(/MIT license/i.test(src), 'the licence header must stay');
+  assert.ok(/Kazuhiko Arase/.test(src), 'attribution must stay');
+  assert.ok(/VENDORED THIRD-PARTY CODE -- do not edit/.test(src), 'the provenance header must stay');
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

@@ -30,6 +30,9 @@
 
       <section class="screen" id="screen-board" hidden>
         <div id="entry-host" class="entry-host"></div>
+        <!-- Outside .screen__body on purpose: that element is cleared and
+             rebuilt after every pick, and the QR never changes mid-draft. -->
+        <div id="board-qr" class="board-qr" hidden></div>
         <div class="screen__body"></div>
       </section>
     </main>
@@ -45,6 +48,7 @@
     <!-- Classic script tags in dependency order: no build step, no ES modules
          (file:// blocks module loading), no CDN. Everything hangs off
          window.DraftApp. -->
+    <script src="js/vendor/qrcode.js"></script>
     <script src="js/utils.js"></script>
     <script src="js/schema.js"></script>
     <script src="js/state.js"></script>
@@ -60,6 +64,8 @@
     <script src="js/views/syncStatus.js"></script>
     <script src="js/views/setup.js"></script>
     <script src="js/views/entry.js"></script>
+    <script src="js/views/qrcode.js"></script>
+    <script src="js/views/shareCode.js"></script>
     <script src="js/views/board.js"></script>
     <script src="js/views/history.js"></script>
     <script src="js/app.js"></script>

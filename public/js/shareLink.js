@@ -14,6 +14,27 @@
 
   const PREFIX = '#v1.';
 
+  // Every Apps Script deployment URL is this boilerplate wrapped around one id.
+  // Stripping it costs nothing and saves 40 characters, which is the difference
+  // between a 61x61 QR code and a 53x53 one -- i.e. 15% bigger modules on the
+  // TV for the same area, which is the whole game when scanning from a sofa.
+  const SCRIPT_PREFIX = 'https://script.google.com/macros/s/';
+  const SCRIPT_SUFFIX = '/exec';
+
+  function packUrl(url) {
+    const trimmed = String(url || '').trim();
+    if (trimmed.startsWith(SCRIPT_PREFIX) && trimmed.endsWith(SCRIPT_SUFFIX)) {
+      return trimmed.slice(SCRIPT_PREFIX.length, -SCRIPT_SUFFIX.length);
+    }
+    // Anything else (a test harness, a proxy) travels whole.
+    return trimmed;
+  }
+
+  function unpackUrl(packed) {
+    const value = String(packed || '');
+    return /^https?:\/\//.test(value) ? value : SCRIPT_PREFIX + value + SCRIPT_SUFFIX;
+  }
+
   /**
    * btoa() throws on anything outside Latin-1, and a draft key can easily carry
    * a character that is: draftKey() strips only : \ / ? * [ ] ' " , so a league
@@ -40,7 +61,30 @@
      *   whatever origin they are serving from.
      */
     encode({ url, token, draftKey }) {
-      return PREFIX + toBase64Url(JSON.stringify({ u: url || '', t: token || '', k: draftKey || '' }));
+      return PREFIX + toBase64Url(JSON.stringify({ u: packUrl(url), t: token || '', k: draftKey || '' }));
+    },
+
+    /**
+     * Whether a link generated here would actually work in someone else's
+     * hands, and if not, why. Both the Share panel and the board's QR code ask
+     * this -- two copies of the reasoning would eventually disagree, and the
+     * failure mode is handing out a link that silently does nothing.
+     *
+     * @returns {{ok: boolean, reason: string}} reason is '' when ok.
+     */
+    availability({ protocol, hostname, scriptUrl, viewToken, writeToken } = {}) {
+      // file:// has no address at all; localhost means "this phone" to every
+      // guest who opens it.
+      if (!String(protocol || '').startsWith('http')) return { ok: false, reason: 'file' };
+      if (!hostname || hostname === 'localhost' || hostname === '127.0.0.1') {
+        return { ok: false, reason: 'local' };
+      }
+      if (!scriptUrl) return { ok: false, reason: 'no-sheet' };
+      if (!viewToken) return { ok: false, reason: 'no-token' };
+      // A viewer link built from the write token would let anyone holding it
+      // overwrite the draft, which is the one thing viewer mode must not allow.
+      if (writeToken && viewToken === writeToken) return { ok: false, reason: 'same-token' };
+      return { ok: true, reason: '' };
     },
 
     /** Builds the whole link a guest opens. */
@@ -62,7 +106,7 @@
         const parsed = JSON.parse(fromBase64Url(raw.slice(PREFIX.length)));
         if (!parsed || typeof parsed !== 'object') return null;
         const out = {
-          url: String(parsed.u || ''),
+          url: parsed.u ? unpackUrl(parsed.u) : '',
           token: String(parsed.t || ''),
           draftKey: String(parsed.k || ''),
         };

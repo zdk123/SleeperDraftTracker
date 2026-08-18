@@ -122,77 +122,73 @@
 
     const explain = (text) => el('p', { class: 'muted', text });
 
-    // A link is only worth handing out if the people you hand it to can open it.
-    // file:// has no address at all, and localhost means "this laptop" on every
-    // phone that tries it -- so say that plainly instead of producing a link
-    // that fails silently in someone else's hands.
-    const host = window.location.hostname;
-    const reachable =
-      window.location.protocol.startsWith('http') &&
-      host !== 'localhost' &&
-      host !== '127.0.0.1' &&
-      host !== '';
+    // One place decides whether a link from here would work in someone else's
+    // hands; the board's QR asks the same question the same way.
+    const { ok, reason } = App.shareLink.availability({
+      protocol: window.location.protocol,
+      hostname: window.location.hostname,
+      scriptUrl,
+      viewToken,
+      writeToken: prefs.token || '',
+    });
 
-    if (!reachable) {
-      body.append(
-        el('h3', { text: 'Not from this address' }),
-        explain(
-          window.location.protocol === 'file:'
-            ? 'You opened the draft board as a file on this computer, which has no web address ' +
-              'other people can reach. Viewer links need the hosted version.'
-            : 'You are running the draft board on this laptop only, so a link to it would just ' +
-              'point at each guest’s own phone. Viewer links need the hosted version.'
-        ),
-        explain(
-          'Your draft is completely fine here — this only affects sharing. Open the same draft ' +
-            'from the hosted address to hand out links.'
-        )
-      );
-      return;
-    }
-
-    if (!scriptUrl) {
-      body.append(
-        el('h3', { text: 'Not set up yet' }),
-        explain(
+    if (!ok) {
+      const problems = {
+        file: [
+          'Not from this address',
+          'You opened the draft board as a file on this computer, which has no web address ' +
+            'other people can reach. Viewer links need the hosted version.',
+        ],
+        local: [
+          'Not from this address',
+          'You are running the draft board on this laptop only, so a link to it would just ' +
+            'point at each guest’s own phone. Viewer links need the hosted version.',
+        ],
+        'no-sheet': [
+          'Not set up yet',
           'Sharing reads the draft out of your Google Sheet, so the sheet backup has to be ' +
-            'working first. There is no spreadsheet connected to this draft.'
-        )
-      );
-      return;
-    }
-
-    if (!viewToken) {
-      body.append(
-        el('h3', { text: 'Viewer links are off' }),
-        explain(
-          'To let people follow the draft on their phones, pick a second random word or phrase — ' +
-            'different from your access token — and do two things with it:'
-        ),
-        el('ol', { class: 'steps' }, [
-          el('li', { text: 'Put it in the “Viewer link token” box on the setup screen.' }),
-          el('li', {
-            text:
-              'Put the same value into VIEW_TOKEN at the top of Code.gs, then re-publish: ' +
-              'Deploy → Manage deployments → ✏️ → Version: New version → Deploy.',
-          }),
-        ]),
-        explain(
-          'That second step is the one people miss. Editing Code.gs changes nothing on its own — ' +
-            'a deployment is a frozen snapshot until you publish a new version of it.'
-        )
-      );
-      return;
-    }
-
-    if (viewToken === (prefs.token || '') && prefs.token) {
-      body.append(
-        el('h3', { text: 'These two tokens must differ' }),
-        explain(
+            'working first. There is no spreadsheet connected to this draft.',
+        ],
+        'same-token': [
+          'These two tokens must differ',
           'Your viewer token is the same as your access token, so the link would let anyone ' +
-            'who has it change the draft. Change one of them on the setup screen first.'
-        )
-      );
+            'who has it change the draft. Change one of them on the setup screen first.',
+        ],
+      };
+
+      if (reason === 'no-token') {
+        body.append(
+          el('h3', { text: 'Viewer links are off' }),
+          explain(
+            'To let people follow the draft on their phones, pick a second random word or phrase — ' +
+              'different from your access token — and do two things with it:'
+          ),
+          el('ol', { class: 'steps' }, [
+            el('li', { text: 'Put it in the “Viewer link token” box on the setup screen.' }),
+            el('li', {
+              text:
+                'Put the same value into VIEW_TOKEN at the top of Code.gs, then re-publish: ' +
+                'Deploy → Manage deployments → ✏️ → Version: New version → Deploy.',
+            }),
+          ]),
+          explain(
+            'That second step is the one people miss. Editing Code.gs changes nothing on its own — ' +
+              'a deployment is a frozen snapshot until you publish a new version of it.'
+          )
+        );
+        return;
+      }
+
+      const [heading, detail] = problems[reason] || ['Sharing is not available', ''];
+      body.append(el('h3', { text: heading }), explain(detail));
+      if (reason === 'file' || reason === 'local') {
+        body.append(
+          explain(
+            'Your draft is completely fine here — this only affects sharing. Open the same draft ' +
+              'from the hosted address to hand out links.'
+          )
+        );
+      }
       return;
     }
 
@@ -208,13 +204,26 @@
 
     body.append(
       explain(
-        'Send this to the group chat. It opens a read-only page showing whoever taps it their ' +
-          'own roster, budget and max bid, updating on its own a few seconds behind the room.'
+        'The code is on the draft board too — click it there to blow it up for the room. This ' +
+          'opens a read-only page showing whoever scans it their own roster, budget and max bid, ' +
+          'updating on its own a few seconds behind the room.'
       ),
-      box,
+      el('div', { class: 'share-qr' }, [App.views.qrcode.render(link)]),
       el('div', { class: 'btn-stack' }, [
         el('button', {
           class: 'btn btn--primary',
+          text: 'Show it big on the screen',
+          onclick: () => {
+            closePanel();
+            App.views.shareCode.open();
+          },
+        }),
+      ]),
+      el('h3', { text: 'Or send the link' }),
+      box,
+      el('div', { class: 'btn-stack' }, [
+        el('button', {
+          class: 'btn',
           text: 'Copy link',
           onclick: async () => {
             try {
@@ -446,7 +455,10 @@
 
     document.getElementById('panel-close').addEventListener('click', closePanel);
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !document.getElementById('panel').hidden) closePanel();
+      if (e.key !== 'Escape') return;
+      // The enlarged QR sits on top of everything, so it closes first.
+      if (App.views.shareCode.isOpen()) return App.views.shareCode.close();
+      if (!document.getElementById('panel').hidden) closePanel();
     });
   }
 
@@ -475,6 +487,9 @@
   function startDraftScreen() {
     show('board');
     App.views.entry.render(document.getElementById('entry-host'));
+    // Mounted once. The link can't change mid-draft, and rebuilding ~1,400 SVG
+    // subpaths on every pick would be work for nothing.
+    App.views.shareCode.mount(document.getElementById('board-qr'));
     renderDraft();
   }
 

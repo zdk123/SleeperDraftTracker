@@ -160,7 +160,8 @@ version.
 The big screen is for the room. This is for the person who just wants to check *their own* roster
 and budget without reading a TV from across the sofa.
 
-Turn it on and you get a link. Anyone who opens it sees a phone-shaped page: their team's roster
+Turn it on and a QR code appears in the corner of the draft board. Click it and it fills the screen
+so the whole room can scan at once; Esc puts the board back. Anyone who scans sees a phone-shaped page: their team's roster
 with the empty spots still to fill, their remaining budget and max bid, who's nominating, the last
 few picks, and a table of everyone else. It updates on its own. **It cannot change the draft** —
 the page doesn't load any of the code that writes, so there is no "are you sure" to get wrong.
@@ -185,8 +186,9 @@ Two things to know before you rely on it:
    Deploy. Editing `Code.gs` on its own changes nothing — a deployment is a frozen snapshot. Use
    *Manage deployments*, not *New deployment*, which would give you a different URL and break the
    setup you already have.
-5. Start (or resume) the draft, then hit **Share** in the top bar and copy the link into your
-   league's group chat.
+5. Start (or resume) the draft. A **QR code appears in the corner of the board** — click it to fill
+   the screen with a big one and let the room scan it, then press Esc to go back. **Share** in the
+   top bar has the same code plus a copyable link, if you'd rather send it to the group chat.
 
 Never put your access token in the viewer box. The app refuses to start a draft if the two match,
 because a viewer link built from the write token would let anyone who has it overwrite the draft.
@@ -260,8 +262,10 @@ On the actual laptop, actual browser, actual TV:
 - [ ] Turn the wifi **off** and keep entering picks. Everything should still work.
 - [ ] Reload the page mid-draft. It should offer to resume and come back exactly as it was.
 - [ ] If you set up the sheet: turn wifi back on and watch the status pill go green.
-- [ ] If you're using viewer links: open one **on a phone, on cellular data** — not the venue wifi,
-      which would hide a whole class of problem. Check you can pick your team and see your roster,
+- [ ] If you're using viewer links: **scan the QR off the actual TV, from where people will sit** —
+      this is the one thing that can't be checked from a laptop. Click the corner code to enlarge it
+      first. Then open it **on cellular data**, not the venue wifi, which would hide a whole class
+      of problem. Check you can pick your team and see your roster,
       then enter a pick on the laptop and watch the phone follow within ~20 seconds. Then put the
       phone to sleep for two minutes and confirm it catches up when you wake it.
 - [ ] Click Export and check the roster list looks right.
@@ -353,6 +357,11 @@ scripts/        Player-list builder and the test suites
 server.js       Zero-dependency static file server for an http:// origin
 ```
 
+The one piece of third-party code is `public/js/vendor/qrcode.js` (MIT, committed verbatim, never
+patched in place) — hand-rolling Reed-Solomon and mask-penalty scoring would mean a subtle bug
+showing up as an unscannable code in front of a room. It is excluded from the offline build, which
+has no web address to put in a link anyway.
+
 There is **no build step, no `npm install`, and no backend of our own.** The browser builds the
 finished spreadsheet rows itself and posts them to the operator's own Apps Script deployment, which
 is why the standalone HTML file can back up to a sheet with nothing running behind it.
@@ -376,6 +385,11 @@ is why the standalone HTML file can back up to a sheet with nothing running behi
   view, keep it that way — a runtime check is something you have to remember to write.
 - **`health` is a write.** It stamps `Drafts!L1` to prove the round trip works. It is grouped with
   `sync` in `authorize_()` for that reason; do not let it drift into the read list.
+- **The share link is kept short because module count is scan distance.** Stripping the fixed
+  `script.google.com/macros/s/…/exec` boilerplate saves 40 characters, which is the difference
+  between a 61×61 QR and a 53×53 one — 15% bigger modules on the TV for the same area. The QR uses
+  error-correction level **L**, the lowest, deliberately: a code on a clean screen can't be
+  physically damaged, so the only thing that stops a scan is too few pixels per module.
 - **Viewers poll cheaply and fetch rarely.** `poll` returns a revision from a handful of cells;
   `load` returns the whole draft. Fetching on every poll would multiply a 40KB read by every phone
   in the room, so `test-viewer.mjs` pins "unchanged revision issues no load". The full fetch is
