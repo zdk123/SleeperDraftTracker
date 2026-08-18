@@ -1,18 +1,22 @@
-import { sendJson, sendError, methodGuard } from './_lib/http.js';
+import { sendJson, sendError, methodGuard, query } from './_lib/http.js';
 import { requireToken, isConfigured } from './_lib/auth.js';
 import {
-  TABS,
-  CONFIG_READ_RANGE,
-  BACKUP_READ_RANGE,
+  INDEX_RANGE,
+  configReadRange,
+  picksReadRange,
+  backupReadRange,
   rowsToState,
   parseConfigHead,
+  parseIndex,
 } from './_lib/schema.js';
-import { batchGetValues } from './_lib/sheets.js';
+import { getValues, batchGetValues } from './_lib/sheets.js';
 
-// Disaster recovery: rebuild the full draft from the spreadsheet when the
-// operator's browser storage is gone (cleared data, different laptop, crash).
-
-const PICKS_READ_RANGE = `${TABS.PICKS}!A1:L500`;
+// Disaster recovery: list what the spreadsheet holds, and rebuild any one of
+// those drafts when the operator's browser storage is gone (cleared data,
+// different laptop, crash).
+//
+//   GET /api/state                 -> the list of drafts
+//   GET /api/state?draft=<key>     -> rebuild that one
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET'])) return;
@@ -27,26 +31,43 @@ export default async function handler(req, res) {
     );
   }
 
-  try {
-    const ranges = await batchGetValues([CONFIG_READ_RANGE, PICKS_READ_RANGE, BACKUP_READ_RANGE]);
-    const configRows = ranges[CONFIG_READ_RANGE];
-    const head = parseConfigHead(configRows);
+  const wanted = query(req).get('draft');
 
+  try {
+    const drafts = parseIndex(await getValues(INDEX_RANGE).catch(() => []));
+
+    if (!wanted) {
+      return sendJson(res, 200, { ok: true, drafts });
+    }
+
+    const known = drafts.find((d) => d.draftKey === wanted);
+    const ranges = [configReadRange(wanted), picksReadRange(wanted), backupReadRange(wanted)];
+    const values = await batchGetValues(ranges).catch(() => null);
+
+    if (!values) {
+      return sendJson(res, 200, { ok: true, found: false, drafts, state: null });
+    }
+
+    const configRows = values[ranges[0]];
+    const head = parseConfigHead(configRows);
     if (!head.draftId) {
-      return sendJson(res, 200, { ok: true, found: false, state: null });
+      return sendJson(res, 200, { ok: true, found: false, drafts, state: null });
     }
 
     const state = rowsToState({
       configRows,
-      pickRows: ranges[PICKS_READ_RANGE],
-      backupRows: ranges[BACKUP_READ_RANGE],
+      pickRows: values[ranges[1]],
+      backupRows: values[ranges[2]],
     });
 
     return sendJson(res, 200, {
       ok: true,
       found: true,
+      draftKey: wanted,
+      name: head.name || known?.name || '',
       revision: head.revision,
       updatedAt: head.updatedAt,
+      drafts,
       state,
     });
   } catch (err) {

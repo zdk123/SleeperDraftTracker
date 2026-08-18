@@ -1,25 +1,33 @@
 import { sendJson, sendError, readJsonBody, methodGuard } from './_lib/http.js';
 import { requireToken, isConfigured } from './_lib/auth.js';
 import {
-  TABS,
-  ALL_TABS,
-  CONFIG_READ_RANGE,
+  INDEX_TAB,
+  INDEX_RANGE,
+  draftKeyOf,
+  tabsFor,
   stateToRanges,
   logRow,
+  logAppendRange,
+  configReadRange,
+  indexRowsWith,
   parseConfigHead,
 } from './_lib/schema.js';
 import { getValues, batchUpdateValues, appendValues, ensureTabs } from './_lib/sheets.js';
 
 // Full-snapshot write: the client sends its entire state and we rewrite every
-// derived tab. That makes undo/edit a non-problem (a deleted pick is simply
-// absent from the next snapshot) and makes a dropped or reordered sync
-// self-healing -- the next successful write reconciles the sheet exactly.
+// derived tab for that draft. That makes undo/edit a non-problem (a deleted
+// pick is simply absent from the next snapshot) and makes a dropped or
+// reordered sync self-healing -- the next successful write reconciles the
+// sheet exactly.
+//
+// Every draft owns a distinct set of tabs, named after its key, so two drafts
+// sharing one spreadsheet cannot overwrite each other.
 //
 // This endpoint deliberately performs no budget or roster validation. Those
 // guardrails are client-side and synchronous; a server-side rejection mid-draft
 // would be unactionable for the operator and a source of divergence.
 
-let tabsEnsured = false;
+const ensuredTabs = new Set();
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['POST'])) return;
@@ -49,39 +57,37 @@ export default async function handler(req, res) {
     return sendError(res, 400, 'bad_state', 'State is missing draftId.');
   }
 
+  const draftKey = draftKeyOf(state);
   const revision = Number(state.revision) || 0;
 
   try {
-    if (!tabsEnsured) {
-      await ensureTabs(ALL_TABS);
-      tabsEnsured = true;
+    if (!ensuredTabs.has(draftKey)) {
+      await ensureTabs([INDEX_TAB, ...tabsFor(draftKey)]);
+      ensuredTabs.add(draftKey);
     }
 
-    // Two different ways a write can be unsafe, both answered with a 409 the
-    // operator has to resolve deliberately.
-    const head = parseConfigHead(await getValues(CONFIG_READ_RANGE));
-    const sameDraft = head.draftId && head.draftId === state.draftId;
+    const head = parseConfigHead(await getValues(configReadRange(draftKey)));
 
-    // 1. An unrelated draft. One deployment points at one spreadsheet, so a
-    //    second tab, a rehearsal, or another laptop could otherwise replace the
-    //    backup of whichever draft is actually being run.
-    if (head.draftId && !sameDraft && !body.force) {
+    // These tabs belong to one draft, so anything else appearing here means a
+    // key collision -- refuse rather than replace someone else's data.
+    if (head.draftId && head.draftId !== state.draftId && !body.force) {
       return sendJson(res, 409, {
         ok: false,
         error: {
           code: 'different_draft',
           message:
-            'This spreadsheet is holding a different draft. Nothing was overwritten — ' +
-            'take it over deliberately if this is the draft you mean to keep.',
+            'These spreadsheet tabs are holding a different draft. Nothing was overwritten — ' +
+            'take them over deliberately if this is the draft you mean to keep.',
         },
         serverDraftId: head.draftId,
+        serverDraftKey: head.draftKey || draftKey,
         serverRevision: head.revision,
         serverUpdatedAt: head.updatedAt,
       });
     }
 
-    // 2. Older state for the same draft (a restored browser, a stale tab).
-    if (sameDraft && revision <= head.revision && !body.force) {
+    // Older state for the same draft (a restored browser, a stale tab).
+    if (head.draftId === state.draftId && revision <= head.revision && !body.force) {
       return sendJson(res, 409, {
         ok: false,
         error: {
@@ -94,14 +100,22 @@ export default async function handler(req, res) {
       });
     }
 
-    await batchUpdateValues(stateToRanges(state));
-    await appendValues(`${TABS.LOG}!A1`, [
+    // Keep the shared index in step with this draft's own tabs.
+    const existingIndex = await getValues(INDEX_RANGE).catch(() => []);
+
+    await batchUpdateValues([
+      ...stateToRanges(state),
+      { range: INDEX_RANGE, values: indexRowsWith(existingIndex, state) },
+    ]);
+
+    await appendValues(logAppendRange(draftKey), [
       logRow(state, { client: body.client || '', summary: body.summary || '' }),
     ]);
 
     return sendJson(res, 200, {
       ok: true,
       revision,
+      draftKey,
       pickCount: state.picks.length,
       serverTime: new Date().toISOString(),
       forced: Boolean(body.force),

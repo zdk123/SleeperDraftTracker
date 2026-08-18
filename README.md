@@ -112,7 +112,7 @@ Only needed if you want the Google Sheet backup but don't want to host the app.
 ### Optional: Google Sheet backup
 
 This copies every pick to a spreadsheet as you go, so the draft survives even if the laptop dies.
-It also gives you a `Rosters` tab that's laid out for typing into Sleeper afterward.
+It also gives you a per-draft `… Rosters` tab laid out for typing into Sleeper afterward.
 
 **How it works, and what it requires.** Writing to a Google Sheet needs a credential, and a
 credential can't live in a web page — anyone could read it. So the app keeps it on a server: the
@@ -125,24 +125,26 @@ Sync itself is best-effort and never blocks you: picks are written to the browse
 whole draft is pushed to the sheet a second or so later. If the write fails, the pill goes red, the
 app retries, and you carry on typing.
 
-#### One deployment holds one draft
+#### How drafts are kept apart
 
-Worth understanding before you share the link:
+Every draft gets a key when you start it: the date, the name you typed, and a short random
+suffix — `2026-08-24 Kurtz League x9a2`. That key names the spreadsheet tabs and the export files.
 
+- **One spreadsheet holds as many drafts as you like.** Each one writes to its own set of tabs
+  (`… Picks`, `… Rosters`, `… Budgets`, `… Config`, `… Log`, `… Backup`), so a practice run and the
+  real thing cannot touch each other. A shared **`Drafts`** tab lists them all with pick counts and
+  when each was last saved.
+- **Exports are named the same way**, so `2026-08-24-Kurtz-League-x9a2-rosters.txt` won't quietly
+  overwrite yesterday's file in your downloads folder.
+- **Restoring picks a draft.** *Backup → List drafts in the sheet* shows everything the spreadsheet
+  holds and loads any of them onto this computer.
 - **The draft lives in the browser, not on the server.** Two people opening the same hosted URL do
   *not* see the same board — each gets their own empty setup screen. There is no spectator view;
   the room watches the operator's screen on the TV, which is the whole design.
-- **The spreadsheet is shared, and holds one draft at a time.** A deployment has a single
-  `SHEETS_SPREADSHEET_ID`, so whoever syncs writes to that one sheet.
-- **A second draft can't quietly replace the first.** If the sheet already holds a different draft,
-  the app refuses to overwrite it and offers you the choice — so a rehearsal left open in another
-  tab can't wipe the backup of the draft you're actually running. Taking over is one deliberate
-  click.
-- **Running two real drafts at once needs two deployments** (or two spreadsheets), since there's
-  one sheet per deployment. For back-to-back drafts, just take over the sheet when you start the
-  second one — the append-only `Log` tab keeps a record of both, and export the first before you
-  do.
 - **`APP_WRITE_TOKEN` is what stops strangers writing** to your sheet if they find the URL. Set it.
+
+The only remaining way two drafts can collide is if they somehow share a key, and the app refuses
+that write rather than replacing anything — taking over is a deliberate click.
 
 <details>
 <summary><b>Google Cloud setup (~15 minutes, once)</b></summary>
@@ -168,8 +170,8 @@ Worth understanding before you share the link:
    can't receive mail. *Skipping this step is the single most common reason syncing fails.*
 3. Copy the spreadsheet ID out of the URL:
    `docs.google.com/spreadsheets/d/`**`THIS_PART`**`/edit`
-4. The app creates the tabs it needs (`Rosters`, `Picks`, `Budgets`, `Config`, `Log`, `_Backup`) the
-   first time it writes.
+4. The app creates the tabs it needs the first time it writes — six per draft, named after that
+   draft's key, plus a shared `Drafts` index listing them all.
 
 </details>
 
@@ -277,7 +279,7 @@ Click **Export**:
 - **Rosters (CSV)** / **Pick log (CSV)** — for a spreadsheet.
 - **Full backup (JSON)** — reloadable by this app; keep it as an archive.
 
-If you set up the sheet, the `Rosters` tab has the same thing, already laid out.
+If you set up the sheet, this draft's `… Rosters` tab has the same thing, already laid out.
 
 ---
 

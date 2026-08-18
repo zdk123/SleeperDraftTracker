@@ -164,12 +164,25 @@ async function test(name, fn) {
 const { default: syncHandler } = await import('../api/sync.js');
 const { default: stateHandler } = await import('../api/state.js');
 const { default: healthHandler } = await import('../api/health.js');
-const { TABS } = await import('../api/_lib/schema.js');
+const { TAB_KINDS, INDEX_TAB, parseIndex } = await import('../api/_lib/schema.js');
 
-function draftState({ revision = 1, picks = [], draftId = 'draft_a' } = {}) {
+/** Finds the rows written to one kind of tab, for whichever draft. */
+function tabOfKind(kind, keyContains) {
+  for (const [range, values] of sheet.values) {
+    const tab = rangeTab(range);
+    if (!tab.endsWith(' ' + kind)) continue;
+    if (keyContains && !tab.includes(keyContains)) continue;
+    return values;
+  }
+  return null;
+}
+
+function draftState({ revision = 1, picks = [], draftId = 'draft_a', draftKey, name = '' } = {}) {
   return {
     version: 1,
     draftId,
+    draftKey: draftKey || `2026-08-17 ${draftId}`,
+    name,
     revision,
     status: 'drafting',
     updatedAt: new Date().toISOString(),
@@ -237,29 +250,37 @@ await test('a wrong token is rejected', async () => {
 
 console.log('\nWriting a snapshot');
 
-await test('creates the six tabs on first write', () => {
-  for (const tab of Object.values(TABS)) {
-    assert.ok(sheet.tabs.has(tab), `missing tab ${tab}`);
+await test('creates this draft\'s own tabs plus the shared index', () => {
+  for (const kind of Object.values(TAB_KINDS)) {
+    const expected = `2026-08-17 draft_a ${kind}`;
+    assert.ok(sheet.tabs.has(expected), `missing tab ${expected}`);
   }
+  assert.ok(sheet.tabs.has(INDEX_TAB), 'missing the shared index tab');
 });
 
 await test('writes every derived tab in one batch', () => {
-  const tabs = new Set([...sheet.values.keys()].map(rangeTab));
-  for (const tab of [TABS.CONFIG, TABS.PICKS, TABS.ROSTERS, TABS.BUDGETS, TABS.BACKUP]) {
-    assert.ok(tabs.has(tab), `no data written to ${tab}`);
+  for (const kind of [TAB_KINDS.CONFIG, TAB_KINDS.PICKS, TAB_KINDS.ROSTERS, TAB_KINDS.BUDGETS, TAB_KINDS.BACKUP]) {
+    assert.ok(tabOfKind(kind), `no data written for ${kind}`);
   }
 });
 
+await test('the shared index lists the draft', () => {
+  const rows = [...sheet.values.entries()].find(([r]) => rangeTab(r) === INDEX_TAB);
+  assert.ok(rows, 'index tab was never written');
+  const listed = parseIndex(rows[1]);
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].draftKey, '2026-08-17 draft_a');
+});
+
 await test('the rosters tab carries the player and price', () => {
-  const rosters = [...sheet.values.entries()].find(([r]) => rangeTab(r) === TABS.ROSTERS)[1];
-  const flat = JSON.stringify(rosters);
+  const flat = JSON.stringify(tabOfKind(TAB_KINDS.ROSTERS));
   assert.ok(flat.includes('Patrick Mahomes'), 'player missing from Rosters');
   assert.ok(flat.includes('Sharks'), 'team name missing from Rosters');
   assert.ok(flat.includes('45'), 'price missing from Rosters');
 });
 
 await test('the budgets tab computes remaining and max bid', () => {
-  const budgets = [...sheet.values.entries()].find(([r]) => rangeTab(r) === TABS.BUDGETS)[1];
+  const budgets = tabOfKind(TAB_KINDS.BUDGETS);
   const sharks = budgets.find((row) => row[0] === 'Sharks');
   assert.ok(sharks, 'no Sharks row');
   assert.equal(sharks[3], 45, 'spent');
@@ -286,8 +307,10 @@ await test('rejects a snapshot older than the sheet', async () => {
 });
 
 await test('a stale rejection does not touch the sheet', () => {
-  const rosters = [...sheet.values.entries()].find(([r]) => rangeTab(r) === TABS.ROSTERS)[1];
-  assert.ok(JSON.stringify(rosters).includes('Patrick Mahomes'), 'good data was clobbered by a stale write');
+  assert.ok(
+    JSON.stringify(tabOfKind(TAB_KINDS.ROSTERS)).includes('Patrick Mahomes'),
+    'good data was clobbered by a stale write'
+  );
 });
 
 await test('an equal revision is also rejected', async () => {
@@ -299,32 +322,55 @@ await test('force:true overwrites deliberately', async () => {
   const res = await callSync({ state: draftState({ revision: 1, picks: [] }), force: true });
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.forced, true);
-  const rosters = [...sheet.values.entries()].find(([r]) => rangeTab(r) === TABS.ROSTERS)[1];
-  assert.ok(!JSON.stringify(rosters).includes('Patrick Mahomes'), 'force should have replaced the data');
+  assert.ok(
+    !JSON.stringify(tabOfKind(TAB_KINDS.ROSTERS, 'draft_a')).includes('Patrick Mahomes'),
+    'force should have replaced the data'
+  );
 });
 
-await test('a DIFFERENT draft cannot silently replace the one in the sheet', async () => {
-  // The dangerous case: a live draft is in the sheet and some other tab -- a
-  // rehearsal, a second laptop, a stale window -- syncs an unrelated draft.
-  // Overwriting here would destroy the backup for the draft actually running.
-  const res = await callSync({ state: draftState({ draftId: 'draft_b', revision: 1, picks: [pick()] }) });
+await test('a second draft coexists instead of replacing the first', async () => {
+  // The case that used to destroy a live backup: an unrelated draft syncing to
+  // the same spreadsheet. Each draft now owns its own tabs, so this is simply
+  // allowed -- the isolation is structural rather than a rule that has to hold.
+  const res = await callSync({
+    state: draftState({ draftId: 'draft_b', revision: 1, picks: [pick({ playerName: 'Other Guy' })] }),
+  });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+
+  const second = JSON.stringify(tabOfKind(TAB_KINDS.PICKS, 'draft_b'));
+  assert.ok(second.includes('Other Guy'), 'the second draft was not written');
+  assert.ok(!second.includes('Patrick Mahomes'), 'the two drafts are sharing a tab');
+});
+
+await test('the index lists both drafts', () => {
+  const rows = [...sheet.values.entries()].find(([r]) => rangeTab(r) === INDEX_TAB)[1];
+  const listed = parseIndex(rows);
+  assert.equal(listed.length, 2, JSON.stringify(listed.map((d) => d.draftKey)));
+  assert.ok(listed.some((d) => d.draftKey.includes('draft_a')));
+  assert.ok(listed.some((d) => d.draftKey.includes('draft_b')));
+});
+
+await test('a key collision between different drafts is still refused', async () => {
+  // Same tabs, different draft id -- the only way two drafts can still meet.
+  const res = await callSync({
+    state: draftState({ draftId: 'draft_intruder', draftKey: '2026-08-17 draft_b', revision: 99 }),
+  });
   assert.equal(res.statusCode, 409, JSON.stringify(res.body));
   assert.equal(res.body.error.code, 'different_draft');
-  assert.ok(res.body.serverDraftId, 'should say which draft is in the sheet');
+  assert.ok(res.body.serverDraftId, 'should say which draft is in those tabs');
+  assert.ok(
+    JSON.stringify(tabOfKind(TAB_KINDS.PICKS, 'draft_b')).includes('Other Guy'),
+    'the refused write must not have touched anything'
+  );
 });
 
-await test('taking over the sheet for a new draft works when forced', async () => {
+await test('a deliberate takeover of those tabs is allowed', async () => {
   const res = await callSync({
-    state: draftState({ draftId: 'draft_b', revision: 1, picks: [pick()] }),
+    state: draftState({ draftId: 'draft_intruder', draftKey: '2026-08-17 draft_b', revision: 99 }),
     force: true,
   });
   assert.equal(res.statusCode, 200, JSON.stringify(res.body));
   assert.equal(res.body.forced, true);
-});
-
-await test('after taking over, the new draft syncs normally', async () => {
-  const res = await callSync({ state: draftState({ draftId: 'draft_b', revision: 2, picks: [pick()] }) });
-  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
 });
 
 console.log('\nDeletes leave no stale rows');
@@ -332,20 +378,28 @@ console.log('\nDeletes leave no stale rows');
 await test('removing a pick clears it from the sheet', async () => {
   const two = [pick(), pick({ id: 'p2', playerId: '4034', playerName: 'Bijan Robinson', position: 'RB', slot: 'RB1', price: 60, teamId: 't2' })];
   await callSync({ state: draftState({ draftId: 'draft_c', revision: 10, picks: two }), force: true });
-  let picks = [...sheet.values.entries()].find(([r]) => rangeTab(r) === TABS.PICKS)[1];
+  let picks = tabOfKind(TAB_KINDS.PICKS, 'draft_c');
   assert.ok(JSON.stringify(picks).includes('Bijan Robinson'));
 
   await callSync({ state: draftState({ draftId: 'draft_c', revision: 11, picks: [two[0]] }) });
-  picks = [...sheet.values.entries()].find(([r]) => rangeTab(r) === TABS.PICKS)[1];
+  picks = tabOfKind(TAB_KINDS.PICKS, 'draft_c');
   assert.ok(!JSON.stringify(picks).includes('Bijan Robinson'), 'deleted pick still on the sheet');
   assert.ok(JSON.stringify(picks).includes('Patrick Mahomes'), 'surviving pick was lost');
 });
 
 console.log('\nRestore');
 
-await test('rebuilds full state from the sheet', async () => {
+await test('lists the drafts in the spreadsheet', async () => {
   const res = mockRes();
   await stateHandler(mockReq({ url: '/api/state' }), res);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.ok(Array.isArray(res.body.drafts), 'expected a draft list');
+  assert.ok(res.body.drafts.length >= 2, JSON.stringify(res.body.drafts));
+});
+
+await test('rebuilds one named draft from the sheet', async () => {
+  const res = mockRes();
+  await stateHandler(mockReq({ url: '/api/state?draft=' + encodeURIComponent('2026-08-17 draft_c') }), res);
   assert.equal(res.statusCode, 200, JSON.stringify(res.body));
   assert.equal(res.body.found, true);
   assert.equal(res.body.state.picks.length, 1);

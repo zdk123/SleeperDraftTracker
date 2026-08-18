@@ -111,6 +111,15 @@ function startFakeGoogle(port) {
   });
 }
 
+/** Tabs are now named "<draft key> <Kind>" and quoted in A1 ranges. */
+function tabRows(sheet, kind) {
+  for (const [range, values] of sheet.values) {
+    const tab = range.split('!')[0].replace(/^'|'$/g, '').replace(/''/g, "'");
+    if (tab.endsWith(' ' + kind)) return values;
+  }
+  return null;
+}
+
 function lookup(sheet, range) {
   if (sheet.values.has(range)) return sheet.values.get(range);
   const tab = range.split('!')[0].replace(/^'|'$/g, '');
@@ -150,6 +159,26 @@ function startAppServer(port, googlePort) {
 function require$crypto() {
   // Lazy so the offline-only scenarios don't need it.
   return globalThis.__cryptoMod;
+}
+
+/**
+ * Fails fast if a server from an earlier crashed run still holds the port. It
+ * would answer requests with stale code, which silently invalidates everything
+ * the simulation then measures.
+ */
+async function assertPortFree(port, what) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(500) });
+    if (res.ok) {
+      throw new Error(
+        `${what}: port ${port} is already in use — a server from an earlier run is still ` +
+          `there and would serve stale code (pkill -f "node server.js")`
+      );
+    }
+  } catch (err) {
+    if (err.message.includes('already in use')) throw err;
+    /* nothing listening: good */
+  }
 }
 
 /** Polls until the app server actually answers, rather than guessing a delay. */
@@ -476,10 +505,10 @@ async function reconcile(scenario, browser, intended, sheet) {
 
   // --- 4. the sheet
   if (sheet) {
-    const picksRange = [...sheet.values.entries()].find(([r]) => r.startsWith('Picks'));
-    check(scenario, 'sheet received a Picks tab', Boolean(picksRange));
-    if (picksRange) {
-      const rows = picksRange[1].slice(1).filter((r) => r[2]);
+    const picksRows = tabRows(sheet, 'Picks');
+    check(scenario, 'sheet received a Picks tab', Boolean(picksRows));
+    if (picksRows) {
+      const rows = picksRows.slice(1).filter((r) => r[2]);
       check(scenario, 'sheet holds every pick', rows.length === intended.length, `got ${rows.length}`);
 
       const sheetFps = rows
@@ -488,20 +517,20 @@ async function reconcile(scenario, browser, intended, sheet) {
       check(scenario, 'sheet rows match the app exactly',
         JSON.stringify(sheetFps) === JSON.stringify(liveFps), firstDiff(liveFps, sheetFps));
 
-      const blanks = picksRange[1].slice(1 + rows.length).filter((r) => r.some((c) => c !== ''));
+      const blanks = picksRows.slice(1 + rows.length).filter((r) => r.some((c) => c !== ''));
       check(scenario, 'no stale rows left below the data', blanks.length === 0,
         `${blanks.length} dirty rows`);
     }
 
-    const rostersRange = [...sheet.values.entries()].find(([r]) => r.startsWith('Rosters'));
-    const rosterFlat = JSON.stringify(rostersRange ? rostersRange[1] : []);
+    const rosterFlat = JSON.stringify(tabRows(sheet, 'Rosters') || []);
     const missingRoster = intended.filter((p) => !rosterFlat.includes(p.playerName));
     check(scenario, 'sheet Rosters tab names every player', missingRoster.length === 0,
       missingRoster.slice(0, 3).map((p) => p.playerName).join(', '));
 
     // Restore path: rebuild from the sheet and confirm it round-trips.
     const restored = await browser.eval(`
-      fetch('api/state').then(r => r.json()).then(d => JSON.stringify({
+      fetch('api/state?draft=' + encodeURIComponent(DraftApp.store.get().draftKey))
+        .then(r => r.json()).then(d => JSON.stringify({
         found: d.found,
         count: d.state ? d.state.picks.length : -1,
         fps: d.state ? d.state.picks.map(p => p.playerId + '|' + p.playerName + '|' +
@@ -684,6 +713,7 @@ async function scenarioStandaloneFile() {
 async function scenarioLocalServerWithSheet() {
   const name = 'B. Local server + Google Sheet';
   console.log(`\n${name}`);
+  await assertPortFree(8791, 'scenario B');
   const { sheet, server } = await startFakeGoogle(9502);
   const app = startAppServer(8791, 9502);
   await waitForServer(8791, 'app server');
@@ -728,6 +758,7 @@ async function scenarioLocalServerWithSheet() {
 async function scenarioConnectionDropsMidDraft() {
   const name = 'C. Connection drops mid-draft, then returns';
   console.log(`\n${name}`);
+  await assertPortFree(8792, 'scenario C');
   const { sheet, server } = await startFakeGoogle(9503);
   const app = startAppServer(8792, 9503);
   await waitForServer(8792, 'app server');
@@ -854,9 +885,19 @@ function killStaleBrowsers() {
   }
 }
 
+/** Also sweep app servers this harness spawned, for the same reason. */
+function killStaleServers() {
+  try {
+    spawn('pkill', ['-f', 'SIM_GOOGLE_BASE'], { stdio: 'ignore' });
+  } catch {
+    /* nothing to clean up */
+  }
+}
+
 async function main() {
   globalThis.__cryptoMod = await import('node:crypto');
   killStaleBrowsers();
+  killStaleServers();
   await sleep(500);
 
   const only = process.argv[2];

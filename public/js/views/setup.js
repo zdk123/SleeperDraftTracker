@@ -110,6 +110,12 @@
       const healthNote = el('div', { class: 'note-slot' });
       const totalSlots = el('span', { class: 'pill' });
 
+      const nameInput = el('input', {
+        type: 'text',
+        id: 'draft-name',
+        placeholder: 'e.g. Kurtz League 2026',
+        maxlength: '40',
+      });
       const budgetInput = el('input', {
         type: 'number',
         min: '1',
@@ -195,6 +201,16 @@
               class: 'muted',
               text: 'Set this up before draft night. Everything can be changed later.',
             }),
+            el('div', { class: 'field field--name' }, [
+              el('label', { for: 'draft-name', text: 'Draft name (optional)' }),
+              nameInput,
+              el('p', {
+                class: 'muted small',
+                text:
+                  'Names the export files and the spreadsheet tabs, so a practice run and the ' +
+                  'real thing stay apart.',
+              }),
+            ]),
           ]),
 
           // --- teams
@@ -404,6 +420,7 @@
                 App.sync.setToken(tokenValue);
                 store.create({
                   teams: named,
+                  name: nameInput.value,
                   settings: {
                     budgetPerTeam: Number(budgetInput.value) || 200,
                     minBid: Number(reserveInput.value) || 0,

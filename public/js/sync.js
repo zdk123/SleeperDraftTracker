@@ -181,8 +181,10 @@
       return push({ force: true, summary: 'forced overwrite' });
     },
 
-    async fetchRemote() {
-      const res = await fetch('api/state', { headers: headers() });
+    /** Without a key: the list of drafts. With one: that draft's full state. */
+    async fetchRemote(draftKey) {
+      const url = draftKey ? `api/state?draft=${encodeURIComponent(draftKey)}` : 'api/state';
+      const res = await fetch(url, { headers: headers() });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         throw new Error(data.error?.message || `HTTP ${res.status}`);

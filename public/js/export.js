@@ -15,8 +15,14 @@
     return rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
   }
 
+  /**
+   * Filenames carry the draft's key, so exports from two drafts (or two points
+   * in one draft) never overwrite each other in the downloads folder.
+   */
   function stamp() {
-    return new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const state = store.get();
+    const key = (state && (state.draftKey || state.draftId)) || 'draft';
+    return key.replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
   }
 
   App.exporter = {
@@ -68,7 +74,8 @@
     /** Plain text grouped by team -- the version to read off while typing into Sleeper. */
     rostersText() {
       const state = store.get();
-      const lines = [`AUCTION DRAFT RESULTS — ${new Date().toLocaleString()}`, ''];
+      const title = state.name ? `${state.name} — auction draft results` : 'AUCTION DRAFT RESULTS';
+      const lines = [title, new Date().toLocaleString(), ''];
 
       for (const team of state.teams) {
         const summary = store.teamSummary(team.id);
@@ -93,16 +100,16 @@
     },
 
     downloadPicksCsv() {
-      utils.downloadFile(`draft-picks-${stamp()}.csv`, App.exporter.picksCsv(), 'text/csv');
+      utils.downloadFile(`${stamp()}-picks.csv`, App.exporter.picksCsv(), 'text/csv');
     },
     downloadRostersCsv() {
-      utils.downloadFile(`draft-rosters-${stamp()}.csv`, App.exporter.rostersCsv(), 'text/csv');
+      utils.downloadFile(`${stamp()}-rosters.csv`, App.exporter.rostersCsv(), 'text/csv');
     },
     downloadRostersText() {
-      utils.downloadFile(`draft-rosters-${stamp()}.txt`, App.exporter.rostersText());
+      utils.downloadFile(`${stamp()}-rosters.txt`, App.exporter.rostersText());
     },
     downloadStateJson() {
-      utils.downloadFile(`draft-backup-${stamp()}.json`, App.exporter.stateJson(), 'application/json');
+      utils.downloadFile(`${stamp()}-backup.json`, App.exporter.stateJson(), 'application/json');
     },
   };
 })(window.DraftApp);

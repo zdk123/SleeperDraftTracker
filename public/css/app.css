@@ -515,6 +515,47 @@ main {
   overflow-y: auto;
 }
 
+.draft-list {
+  margin-top: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.draft-list__row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+.draft-list__row:last-child {
+  border-bottom: 0;
+}
+.draft-list__row.is-current {
+  background: var(--info-bg);
+}
+.draft-list__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.draft-list__name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.draft-list__meta {
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+
+.field--name {
+  max-width: 26rem;
+  margin-top: 0.9rem;
+}
+
 .copybox {
   width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

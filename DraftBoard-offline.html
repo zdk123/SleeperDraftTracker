@@ -523,6 +523,47 @@ main {
   overflow-y: auto;
 }
 
+.draft-list {
+  margin-top: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.draft-list__row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+}
+.draft-list__row:last-child {
+  border-bottom: 0;
+}
+.draft-list__row.is-current {
+  background: var(--info-bg);
+}
+.draft-list__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.draft-list__name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.draft-list__meta {
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+
+.field--name {
+  max-width: 26rem;
+  margin-top: 0.9rem;
+}
+
 .copybox {
   width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -1082,6 +1123,36 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
     },
 
     /**
+     * Identifies one draft everywhere it shows up: spreadsheet tab names and
+     * export filenames. Date first so drafts sort chronologically, the
+     * operator's name in the middle so it's recognisable, and a short random
+     * suffix so two drafts on the same day can't collide.
+     *
+     * Kept safe for both: Google rejects : \ / ? * [ ] in tab names, and those
+     * plus a few others make poor filenames.
+     */
+    draftKey({ name, draftId, date }) {
+      const d = date || new Date();
+      const stamp = [
+        d.getFullYear(),
+        String(d.getMonth() + 1).padStart(2, '0'),
+        String(d.getDate()).padStart(2, '0'),
+      ].join('-');
+
+      const slug = String(name || '')
+        .trim()
+        .replace(/[:\\/?*[\]'"]+/g, '')
+        .replace(/\s+/g, ' ')
+        .slice(0, 40)
+        .trim();
+
+      // Last few characters of the id are already random.
+      const suffix = String(draftId || '').slice(-4) || Math.random().toString(36).slice(2, 6);
+
+      return [stamp, slug, suffix].filter(Boolean).join(' ');
+    },
+
+    /**
      * Debounce with an optional ceiling on how long calls can be deferred.
      *
      * Without `maxWait`, a steady stream of calls closer together than `wait`
@@ -1246,17 +1317,23 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
       return state;
     },
 
-    create({ teams, settings }) {
+    create({ teams, settings, name }) {
       const roster = teams.map((t) => ({
         id: t.id || uid('team'),
         name: t.name,
         manager: t.manager || '',
         sleeperUserId: t.sleeperUserId || '',
       }));
+      const draftId = uid('draft');
       state = {
         version: 1,
         appVersion: App.VERSION || '1.0.0',
-        draftId: uid('draft'),
+        draftId,
+        name: (name || '').trim(),
+        // Human-readable and unique: dated, named, and tie-broken by a short
+        // random suffix. Names the spreadsheet tabs and the export files, so a
+        // second draft can never land on top of the first.
+        draftKey: App.utils.draftKey({ name, draftId, date: new Date() }),
         revision: 1,
         status: 'drafting',
         createdAt: new Date().toISOString(),
@@ -2100,8 +2177,10 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
       return push({ force: true, summary: 'forced overwrite' });
     },
 
-    async fetchRemote() {
-      const res = await fetch('api/state', { headers: headers() });
+    /** Without a key: the list of drafts. With one: that draft's full state. */
+    async fetchRemote(draftKey) {
+      const url = draftKey ? `api/state?draft=${encodeURIComponent(draftKey)}` : 'api/state';
+      const res = await fetch(url, { headers: headers() });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         throw new Error(data.error?.message || `HTTP ${res.status}`);
@@ -2139,25 +2218,28 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
       return persistence.load();
     },
 
+    /** Every draft the spreadsheet knows about, newest activity first. */
+    async listRemote() {
+      const data = await sync.fetchRemote();
+      return data.drafts || [];
+    },
+
     /**
-     * Compares the local draft against the sheet's copy.
-     * @returns {'local-only'|'remote-only'|'match'|'local-ahead'|'remote-ahead'|'different-draft'|'no-remote'}
+     * Compares the local draft against the sheet's copy of that same draft.
+     * @returns {'local-only'|'remote-only'|'match'|'local-ahead'|'remote-ahead'|'no-remote'}
      */
     async compare(localState) {
       let remote;
       try {
-        remote = await sync.fetchRemote();
+        remote = await sync.fetchRemote(localState ? localState.draftKey : null);
       } catch {
         return { verdict: 'no-remote', remote: null };
       }
 
       if (!remote.found) {
-        return { verdict: localState ? 'local-only' : 'remote-only', remote: null };
+        return { verdict: localState ? 'local-only' : 'remote-only', remote: null, drafts: remote.drafts };
       }
       if (!localState) return { verdict: 'remote-only', remote };
-      if (localState.draftId !== remote.state.draftId) {
-        return { verdict: 'different-draft', remote };
-      }
       if (localState.revision > remote.revision) return { verdict: 'local-ahead', remote };
       if (localState.revision < remote.revision) return { verdict: 'remote-ahead', remote };
       return { verdict: 'match', remote };
@@ -2193,8 +2275,14 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
     return rows.map((row) => row.map(csvCell).join(',')).join('\r\n');
   }
 
+  /**
+   * Filenames carry the draft's key, so exports from two drafts (or two points
+   * in one draft) never overwrite each other in the downloads folder.
+   */
   function stamp() {
-    return new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const state = store.get();
+    const key = (state && (state.draftKey || state.draftId)) || 'draft';
+    return key.replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
   }
 
   App.exporter = {
@@ -2246,7 +2334,8 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
     /** Plain text grouped by team -- the version to read off while typing into Sleeper. */
     rostersText() {
       const state = store.get();
-      const lines = [`AUCTION DRAFT RESULTS — ${new Date().toLocaleString()}`, ''];
+      const title = state.name ? `${state.name} — auction draft results` : 'AUCTION DRAFT RESULTS';
+      const lines = [title, new Date().toLocaleString(), ''];
 
       for (const team of state.teams) {
         const summary = store.teamSummary(team.id);
@@ -2271,16 +2360,16 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
     },
 
     downloadPicksCsv() {
-      utils.downloadFile(`draft-picks-${stamp()}.csv`, App.exporter.picksCsv(), 'text/csv');
+      utils.downloadFile(`${stamp()}-picks.csv`, App.exporter.picksCsv(), 'text/csv');
     },
     downloadRostersCsv() {
-      utils.downloadFile(`draft-rosters-${stamp()}.csv`, App.exporter.rostersCsv(), 'text/csv');
+      utils.downloadFile(`${stamp()}-rosters.csv`, App.exporter.rostersCsv(), 'text/csv');
     },
     downloadRostersText() {
-      utils.downloadFile(`draft-rosters-${stamp()}.txt`, App.exporter.rostersText());
+      utils.downloadFile(`${stamp()}-rosters.txt`, App.exporter.rostersText());
     },
     downloadStateJson() {
-      utils.downloadFile(`draft-backup-${stamp()}.json`, App.exporter.stateJson(), 'application/json');
+      utils.downloadFile(`${stamp()}-backup.json`, App.exporter.stateJson(), 'application/json');
     },
   };
 })(window.DraftApp);
@@ -2450,6 +2539,12 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
       const healthNote = el('div', { class: 'note-slot' });
       const totalSlots = el('span', { class: 'pill' });
 
+      const nameInput = el('input', {
+        type: 'text',
+        id: 'draft-name',
+        placeholder: 'e.g. Kurtz League 2026',
+        maxlength: '40',
+      });
       const budgetInput = el('input', {
         type: 'number',
         min: '1',
@@ -2535,6 +2630,16 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
               class: 'muted',
               text: 'Set this up before draft night. Everything can be changed later.',
             }),
+            el('div', { class: 'field field--name' }, [
+              el('label', { for: 'draft-name', text: 'Draft name (optional)' }),
+              nameInput,
+              el('p', {
+                class: 'muted small',
+                text:
+                  'Names the export files and the spreadsheet tabs, so a practice run and the ' +
+                  'real thing stay apart.',
+              }),
+            ]),
           ]),
 
           // --- teams
@@ -2744,6 +2849,7 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
                 App.sync.setToken(tokenValue);
                 store.create({
                   teams: named,
+                  name: nameInput.value,
                   settings: {
                     budgetPerTeam: Number(budgetInput.value) || 200,
                     minBid: Number(reserveInput.value) || 0,
@@ -3513,8 +3619,7 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
               match: 'The sheet matches this computer.',
               'local-ahead': 'This computer is ahead — use “Save to sheet now”.',
               'remote-ahead': `The sheet has a newer copy (${remote?.state.picks.length} picks).`,
-              'different-draft': 'The sheet holds a different draft.',
-              'local-only': 'The sheet has no draft saved yet.',
+              'local-only': 'This draft is not in the sheet yet.',
               'remote-only': `The sheet has a draft with ${remote?.state.picks.length} picks.`,
               'no-remote': 'Could not reach the sheet. Your picks are still safe here.',
             };
@@ -3533,6 +3638,61 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
                 })
               );
             }
+          },
+        }),
+        el('button', {
+          class: 'btn',
+          text: 'List drafts in the sheet',
+          onclick: async () => {
+            clear(status).append(el('span', { class: 'note', text: 'Loading…' }));
+            let drafts;
+            try {
+              drafts = await App.restore.listRemote();
+            } catch (err) {
+              clear(status).append(
+                el('span', { class: 'note note--warn', text: `Could not reach the sheet: ${err.message}` })
+              );
+              return;
+            }
+            clear(status);
+            if (!drafts.length) {
+              status.append(el('span', { class: 'note note--info', text: 'The sheet has no drafts yet.' }));
+              return;
+            }
+            const current = store.exists() ? store.get().draftKey : null;
+            status.append(
+              el(
+                'div',
+                { class: 'draft-list' },
+                drafts.map((d) =>
+                  el('div', { class: `draft-list__row${d.draftKey === current ? ' is-current' : ''}` }, [
+                    el('div', { class: 'draft-list__main' }, [
+                      el('span', { class: 'draft-list__name', text: d.name || d.draftKey }),
+                      el('span', {
+                        class: 'draft-list__meta',
+                        text: `${d.picks} picks · ${d.teams} teams · saved ${d.updated || '—'}`,
+                      }),
+                    ]),
+                    d.draftKey === current
+                      ? el('span', { class: 'pill', text: 'on screen' })
+                      : el('button', {
+                          class: 'btn btn--sm',
+                          text: 'Load',
+                          onclick: async () => {
+                            if (!window.confirm(`Replace the draft on screen with "${d.name || d.draftKey}"?`)) return;
+                            const remote = await App.sync.fetchRemote(d.draftKey);
+                            if (!remote.found) {
+                              window.alert('That draft could not be read back from the sheet.');
+                              return;
+                            }
+                            App.restore.adoptRemote(remote);
+                            closePanel();
+                          },
+                        }),
+                  ])
+                )
+              )
+            );
           },
         }),
         el('button', {

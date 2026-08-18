@@ -14,9 +14,25 @@ import {
   parseConfigHead,
   teamSummary,
   expandSlots,
+  draftKeyOf,
+  tabsFor,
+  indexRowsWith,
+  parseIndex,
   DEFAULT_ROSTER_SLOTS,
-  TABS,
+  TAB_KINDS,
 } from '../api/_lib/schema.js';
+
+/** Ranges are now quoted per-draft tab names, e.g. `'2026-08-17 x1y2 Picks'!A1:L500`. */
+function rangesByKind(state) {
+  const out = {};
+  for (const r of stateToRanges(state)) {
+    const tab = r.range.split('!')[0].replace(/^'|'$/g, '');
+    for (const kind of Object.values(TAB_KINDS)) {
+      if (tab.endsWith(' ' + kind)) out[kind] = r.values;
+    }
+  }
+  return out;
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -368,14 +384,12 @@ test('state survives a round-trip through the sheet rows', () => {
   store.addPick({ playerId: '4046', playerName: 'Patrick Mahomes', position: 'QB', nflTeam: 'KC', teamId: a.id, price: 42, slot: 'QB' });
   store.addPick({ playerId: '4034', playerName: 'Christian McCaffrey', position: 'RB', nflTeam: 'SF', teamId: b.id, price: 55, slot: 'RB1' });
 
-  const ranges = stateToRanges(store.get());
-  const byTab = {};
-  for (const r of ranges) byTab[r.range.split('!')[0]] = r.values;
+  const byKind = rangesByKind(store.get());
 
   const restored = rowsToState({
-    configRows: byTab[TABS.CONFIG],
-    pickRows: byTab[TABS.PICKS],
-    backupRows: byTab[TABS.BACKUP],
+    configRows: byKind[TAB_KINDS.CONFIG],
+    pickRows: byKind[TAB_KINDS.PICKS],
+    backupRows: byKind[TAB_KINDS.BACKUP],
   });
 
   assert.equal(restored.picks.length, 2);
@@ -391,13 +405,11 @@ test('reconstruction works from Config+Picks alone when the backup tab is empty'
   const team = state.teams[0].id;
   store.addPick({ playerId: '1', playerName: 'Player One', position: 'QB', nflTeam: 'KC', teamId: team, price: 10, slot: 'QB' });
 
-  const ranges = stateToRanges(store.get());
-  const byTab = {};
-  for (const r of ranges) byTab[r.range.split('!')[0]] = r.values;
+  const byKind = rangesByKind(store.get());
 
   const restored = rowsToState({
-    configRows: byTab[TABS.CONFIG],
-    pickRows: byTab[TABS.PICKS],
+    configRows: byKind[TAB_KINDS.CONFIG],
+    pickRows: byKind[TAB_KINDS.PICKS],
     backupRows: [], // simulate a corrupt/empty backup tab
   });
   assert.equal(restored.picks.length, 1);
@@ -413,8 +425,7 @@ test('deleting a pick clears its old row (no stale trailing data)', () => {
   void p1;
 
   store.removePick(p2.id);
-  const ranges = stateToRanges(store.get());
-  const picks = ranges.find((r) => r.range.startsWith(TABS.PICKS)).values;
+  const picks = rangesByKind(store.get())[TAB_KINDS.PICKS];
 
   const flat = JSON.stringify(picks);
   assert.ok(!flat.includes('Delete Me'), 'deleted pick must not survive in the rewritten range');
@@ -428,17 +439,137 @@ test('the rosters tab blanks out a removed player', () => {
   const team = state.teams[0].id;
   const pick = store.addPick({ playerId: '1', playerName: 'Gone Soon', position: 'QB', teamId: team, price: 5, slot: 'QB' });
   store.removePick(pick.id);
-  const rosters = stateToRanges(store.get()).find((r) => r.range.startsWith(TABS.ROSTERS)).values;
+  const rosters = rangesByKind(store.get())[TAB_KINDS.ROSTERS];
   assert.ok(!JSON.stringify(rosters).includes('Gone Soon'));
 });
 
 test('config head parses the revision for the stale-write guard', () => {
   const state = newDraft();
   store.addPick({ playerId: '1', playerName: 'X', position: 'QB', teamId: state.teams[0].id, price: 1, slot: 'QB' });
-  const configRows = stateToRanges(store.get()).find((r) => r.range.startsWith(TABS.CONFIG)).values;
+  const configRows = rangesByKind(store.get())[TAB_KINDS.CONFIG];
   const head = parseConfigHead(configRows);
   assert.equal(head.draftId, store.get().draftId);
   assert.equal(head.revision, store.get().revision);
+});
+
+console.log('\nDraft keys and multi-draft isolation');
+
+test('a key is dated, named and unique', () => {
+  const key = App.utils.draftKey({
+    name: 'Kurtz League',
+    draftId: 'draft_abc1234',
+    date: new Date(2026, 7, 17),
+  });
+  assert.match(key, /^2026-08-17 Kurtz League \w{4}$/, key);
+});
+
+test('a key is safe for both spreadsheet tabs and filenames', () => {
+  const key = App.utils.draftKey({
+    name: 'A/B: test [x] * ? \\ "quoted"',
+    draftId: 'draft_zzzz9999',
+    date: new Date(2026, 0, 5),
+  });
+  // Google rejects these outright in a tab name.
+  for (const ch of [':', '\\', '/', '?', '*', '[', ']', "'"]) {
+    assert.ok(!key.includes(ch), `key must not contain ${ch}: ${key}`);
+  }
+  assert.ok(key.startsWith('2026-01-05 '), key);
+});
+
+test('an unnamed draft still gets a usable key', () => {
+  const key = App.utils.draftKey({ draftId: 'draft_qqqq1111', date: new Date(2026, 7, 1) });
+  assert.match(key, /^2026-08-01 \w{4}$/, key);
+});
+
+test('two drafts write to entirely separate tabs', () => {
+  const a = store.create({
+    teams: [{ name: 'A' }, { name: 'B' }],
+    name: 'Rehearsal',
+    settings: { budgetPerTeam: 100, minBid: 1, rosterSlots: DEFAULT_ROSTER_SLOTS },
+  });
+  const aTabs = stateToRanges(a).map((r) => r.range.split('!')[0]);
+
+  const b = store.create({
+    teams: [{ name: 'A' }, { name: 'B' }],
+    name: 'Real thing',
+    settings: { budgetPerTeam: 100, minBid: 1, rosterSlots: DEFAULT_ROSTER_SLOTS },
+  });
+  const bTabs = stateToRanges(b).map((r) => r.range.split('!')[0]);
+
+  const overlap = aTabs.filter((t) => bTabs.includes(t));
+  assert.equal(overlap.length, 0, `tabs collide: ${overlap.join(', ')}`);
+  assert.ok(aTabs.every((t) => t.includes('Rehearsal')), aTabs.join(' | '));
+  assert.ok(bTabs.every((t) => t.includes('Real thing')), bTabs.join(' | '));
+});
+
+test('tab names with spaces are quoted for A1 ranges', () => {
+  const state = store.create({
+    teams: [{ name: 'A' }],
+    name: 'My League',
+    settings: { budgetPerTeam: 100, minBid: 1, rosterSlots: DEFAULT_ROSTER_SLOTS },
+  });
+  for (const { range } of stateToRanges(state)) {
+    assert.ok(range.startsWith("'"), `unquoted range would be rejected by Sheets: ${range}`);
+    assert.match(range, /^'[^']+'![A-Z]+\d+:[A-Z]+\d+$/, range);
+  }
+});
+
+test('every tab kind belongs to the draft', () => {
+  const state = store.create({
+    teams: [{ name: 'A' }],
+    name: 'Tabs',
+    settings: { budgetPerTeam: 100, minBid: 1, rosterSlots: DEFAULT_ROSTER_SLOTS },
+  });
+  const expected = tabsFor(draftKeyOf(state));
+  assert.equal(expected.length, 6);
+  assert.ok(expected.every((t) => t.startsWith(draftKeyOf(state))));
+});
+
+test('the index keeps one row per draft and updates in place', () => {
+  const a = store.create({
+    teams: [{ name: 'A' }],
+    name: 'First',
+    settings: { budgetPerTeam: 100, minBid: 1, rosterSlots: DEFAULT_ROSTER_SLOTS },
+  });
+  store.addPick({ playerId: '1', playerName: 'P1', position: 'QB', teamId: a.teams[0].id, price: 5, slot: 'QB' });
+  let rows = indexRowsWith([], store.get());
+  assert.equal(parseIndex(rows).length, 1);
+  assert.equal(parseIndex(rows)[0].picks, 1);
+
+  // Same draft again: still one row, updated.
+  store.addPick({ playerId: '2', playerName: 'P2', position: 'RB', teamId: a.teams[0].id, price: 6, slot: 'RB1' });
+  rows = indexRowsWith(rows, store.get());
+  assert.equal(parseIndex(rows).length, 1, 'the same draft must not be listed twice');
+  assert.equal(parseIndex(rows)[0].picks, 2);
+
+  // A different draft adds a second row without disturbing the first.
+  store.create({
+    teams: [{ name: 'B' }],
+    name: 'Second',
+    settings: { budgetPerTeam: 100, minBid: 1, rosterSlots: DEFAULT_ROSTER_SLOTS },
+  });
+  rows = indexRowsWith(rows, store.get());
+  const listed = parseIndex(rows);
+  assert.equal(listed.length, 2);
+  assert.ok(listed.some((d) => d.name === 'First'), 'the earlier draft was dropped from the index');
+  assert.ok(listed.some((d) => d.name === 'Second'));
+});
+
+test('state carries its key through a sheet round-trip', () => {
+  const state = store.create({
+    teams: [{ name: 'A' }, { name: 'B' }],
+    name: 'Round Trip',
+    settings: { budgetPerTeam: 100, minBid: 1, rosterSlots: DEFAULT_ROSTER_SLOTS },
+  });
+  store.addPick({ playerId: '9', playerName: 'Someone', position: 'QB', teamId: state.teams[0].id, price: 7, slot: 'QB' });
+  const byKind = rangesByKind(store.get());
+  const restored = rowsToState({
+    configRows: byKind[TAB_KINDS.CONFIG],
+    pickRows: byKind[TAB_KINDS.PICKS],
+    backupRows: byKind[TAB_KINDS.BACKUP],
+  });
+  assert.equal(restored.draftKey, store.get().draftKey);
+  assert.equal(restored.name, 'Round Trip');
 });
 
 console.log('\nShared helpers agree across client and server');

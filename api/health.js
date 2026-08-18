@@ -1,11 +1,16 @@
 import { sendJson, methodGuard } from './_lib/http.js';
 import { isConfigured } from './_lib/auth.js';
-import { TABS, ALL_TABS } from './_lib/schema.js';
+import { INDEX_TAB, quoteTab } from './_lib/schema.js';
 import { ensureTabs, getValues, batchUpdateValues } from './_lib/sheets.js';
 
 // A real read+write round-trip against the sheet, surfaced as the setup
 // screen's "Test connection" button. The point is to fail loudly days before
 // draft night rather than silently on it.
+//
+// It probes the shared index tab rather than any draft's tabs, so it works
+// before a draft exists and never touches real draft data.
+
+const PROBE_CELL = `${quoteTab(INDEX_TAB)}!L1`;
 
 export default async function handler(req, res) {
   if (!methodGuard(req, res, ['GET'])) return;
@@ -34,15 +39,15 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { title, created } = await ensureTabs(ALL_TABS);
+    const { title, created } = await ensureTabs([INDEX_TAB]);
     result.sheetTitle = title;
     result.createdTabs = created;
 
-    await getValues(`${TABS.CONFIG}!A1:B1`);
+    await getValues(PROBE_CELL);
     result.canRead = true;
 
     await batchUpdateValues([
-      { range: `${TABS.LOG}!I1`, values: [[`health check ${new Date().toISOString()}`]] },
+      { range: PROBE_CELL, values: [[`last connection test ${new Date().toISOString()}`]] },
     ]);
     result.canWrite = true;
 

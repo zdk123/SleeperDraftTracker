@@ -65,17 +65,23 @@
       return state;
     },
 
-    create({ teams, settings }) {
+    create({ teams, settings, name }) {
       const roster = teams.map((t) => ({
         id: t.id || uid('team'),
         name: t.name,
         manager: t.manager || '',
         sleeperUserId: t.sleeperUserId || '',
       }));
+      const draftId = uid('draft');
       state = {
         version: 1,
         appVersion: App.VERSION || '1.0.0',
-        draftId: uid('draft'),
+        draftId,
+        name: (name || '').trim(),
+        // Human-readable and unique: dated, named, and tie-broken by a short
+        // random suffix. Names the spreadsheet tabs and the export files, so a
+        // second draft can never land on top of the first.
+        draftKey: App.utils.draftKey({ name, draftId, date: new Date() }),
         revision: 1,
         status: 'drafting',
         createdAt: new Date().toISOString(),

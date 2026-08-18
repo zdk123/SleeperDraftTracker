@@ -142,8 +142,7 @@
               match: 'The sheet matches this computer.',
               'local-ahead': 'This computer is ahead — use “Save to sheet now”.',
               'remote-ahead': `The sheet has a newer copy (${remote?.state.picks.length} picks).`,
-              'different-draft': 'The sheet holds a different draft.',
-              'local-only': 'The sheet has no draft saved yet.',
+              'local-only': 'This draft is not in the sheet yet.',
               'remote-only': `The sheet has a draft with ${remote?.state.picks.length} picks.`,
               'no-remote': 'Could not reach the sheet. Your picks are still safe here.',
             };
@@ -162,6 +161,61 @@
                 })
               );
             }
+          },
+        }),
+        el('button', {
+          class: 'btn',
+          text: 'List drafts in the sheet',
+          onclick: async () => {
+            clear(status).append(el('span', { class: 'note', text: 'Loading…' }));
+            let drafts;
+            try {
+              drafts = await App.restore.listRemote();
+            } catch (err) {
+              clear(status).append(
+                el('span', { class: 'note note--warn', text: `Could not reach the sheet: ${err.message}` })
+              );
+              return;
+            }
+            clear(status);
+            if (!drafts.length) {
+              status.append(el('span', { class: 'note note--info', text: 'The sheet has no drafts yet.' }));
+              return;
+            }
+            const current = store.exists() ? store.get().draftKey : null;
+            status.append(
+              el(
+                'div',
+                { class: 'draft-list' },
+                drafts.map((d) =>
+                  el('div', { class: `draft-list__row${d.draftKey === current ? ' is-current' : ''}` }, [
+                    el('div', { class: 'draft-list__main' }, [
+                      el('span', { class: 'draft-list__name', text: d.name || d.draftKey }),
+                      el('span', {
+                        class: 'draft-list__meta',
+                        text: `${d.picks} picks · ${d.teams} teams · saved ${d.updated || '—'}`,
+                      }),
+                    ]),
+                    d.draftKey === current
+                      ? el('span', { class: 'pill', text: 'on screen' })
+                      : el('button', {
+                          class: 'btn btn--sm',
+                          text: 'Load',
+                          onclick: async () => {
+                            if (!window.confirm(`Replace the draft on screen with "${d.name || d.draftKey}"?`)) return;
+                            const remote = await App.sync.fetchRemote(d.draftKey);
+                            if (!remote.found) {
+                              window.alert('That draft could not be read back from the sheet.');
+                              return;
+                            }
+                            App.restore.adoptRemote(remote);
+                            closePanel();
+                          },
+                        }),
+                  ])
+                )
+              )
+            );
           },
         }),
         el('button', {

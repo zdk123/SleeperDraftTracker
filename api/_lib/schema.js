@@ -2,16 +2,53 @@
 // api/sync.js (state -> rows) and api/state.js (rows -> state) use this, so the
 // two directions can't drift apart.
 
-export const TABS = {
+// Each draft gets its own set of tabs, named after its key. Two drafts in one
+// spreadsheet therefore cannot touch each other's data at all -- the isolation
+// is structural rather than a guard that has to hold.
+export const TAB_KINDS = {
   ROSTERS: 'Rosters',
   PICKS: 'Picks',
   BUDGETS: 'Budgets',
   CONFIG: 'Config',
   LOG: 'Log',
-  BACKUP: '_Backup',
+  BACKUP: 'Backup',
 };
 
-export const ALL_TABS = [TABS.ROSTERS, TABS.PICKS, TABS.BUDGETS, TABS.CONFIG, TABS.LOG, TABS.BACKUP];
+/** One shared tab listing every draft in the spreadsheet. */
+export const INDEX_TAB = 'Drafts';
+
+export const INDEX_HEADERS = [
+  'Draft',
+  'Name',
+  'Started',
+  'Last saved',
+  'Picks',
+  'Spent',
+  'Teams',
+  'Status',
+  'Draft ID',
+];
+
+/** Tab name for one kind of data belonging to one draft. */
+export function tabName(draftKey, kind) {
+  return `${draftKey} ${kind}`;
+}
+
+export function tabsFor(draftKey) {
+  return Object.values(TAB_KINDS).map((kind) => tabName(draftKey, kind));
+}
+
+/**
+ * A1 ranges must quote tab names containing spaces, which every draft tab has.
+ * Apostrophes inside a name are escaped by doubling them.
+ */
+export function quoteTab(name) {
+  return `'${String(name).replace(/'/g, "''")}'`;
+}
+
+function range(draftKey, kind, span) {
+  return `${quoteTab(tabName(draftKey, kind))}!${span}`;
+}
 
 // Every rewrite clears a fixed range, so a shrinking pick count (after a
 // delete) can't leave stale trailing rows behind in the derived tabs. These
@@ -236,6 +273,8 @@ function configRows(state) {
   const rows = [
     ['Key', 'Value'],
     ['draftId', state.draftId || ''],
+    ['draftKey', state.draftKey || ''],
+    ['name', state.name || ''],
     ['revision', Number(state.revision) || 0],
     ['updatedAt', state.updatedAt || ''],
     ['status', state.status || ''],
@@ -276,31 +315,94 @@ function backupRows(state) {
   return pad(rows, MAX_BACKUP_ROWS, 2);
 }
 
-/** The single batchUpdate payload rewriting every derived tab. */
+/** The single batchUpdate payload rewriting every derived tab for one draft. */
 export function stateToRanges(state) {
+  const key = draftKeyOf(state);
   const rosterWidth = 1 + MAX_TEAM_COLS * 2;
   return [
     {
-      range: `${TABS.CONFIG}!A1:${colLetter(3)}${MAX_CONFIG_ROWS}`,
+      range: range(key, TAB_KINDS.CONFIG, `A1:${colLetter(3)}${MAX_CONFIG_ROWS}`),
       values: configRows(state),
     },
     {
-      range: `${TABS.PICKS}!A1:${colLetter(PICK_HEADERS.length - 1)}${MAX_PICK_ROWS}`,
+      range: range(key, TAB_KINDS.PICKS, `A1:${colLetter(PICK_HEADERS.length - 1)}${MAX_PICK_ROWS}`),
       values: picksRows(state),
     },
     {
-      range: `${TABS.ROSTERS}!A1:${colLetter(rosterWidth - 1)}${MAX_ROSTER_ROWS}`,
+      range: range(key, TAB_KINDS.ROSTERS, `A1:${colLetter(rosterWidth - 1)}${MAX_ROSTER_ROWS}`),
       values: rostersRows(state),
     },
     {
-      range: `${TABS.BUDGETS}!A1:${colLetter(BUDGET_HEADERS.length - 1)}${MAX_TEAM_ROWS}`,
+      range: range(key, TAB_KINDS.BUDGETS, `A1:${colLetter(BUDGET_HEADERS.length - 1)}${MAX_TEAM_ROWS}`),
       values: budgetsRows(state),
     },
     {
-      range: `${TABS.BACKUP}!A1:B${MAX_BACKUP_ROWS}`,
+      range: range(key, TAB_KINDS.BACKUP, `A1:B${MAX_BACKUP_ROWS}`),
       values: backupRows(state),
     },
   ];
+}
+
+/**
+ * Falls back to the draft id for state written before keys existed, so an old
+ * saved draft still syncs somewhere sensible instead of failing.
+ */
+export function draftKeyOf(state) {
+  return state.draftKey || state.draftId || 'draft';
+}
+
+/** One row describing this draft for the shared index tab. */
+export function indexRow(state) {
+  const spent = (state.picks || []).reduce((sum, p) => sum + (Number(p.price) || 0), 0);
+  return [
+    draftKeyOf(state),
+    state.name || '',
+    (state.createdAt || '').slice(0, 16).replace('T', ' '),
+    (state.updatedAt || '').slice(0, 16).replace('T', ' '),
+    (state.picks || []).length,
+    spent,
+    (state.teams || []).length,
+    state.status || '',
+    state.draftId || '',
+  ];
+}
+
+export const INDEX_RANGE = `${quoteTab(INDEX_TAB)}!A1:I200`;
+
+/** Parses the index into a list of drafts, newest activity first. */
+export function parseIndex(rows) {
+  return (rows || [])
+    .slice(1)
+    .filter((r) => r && r[0])
+    .map((r) => ({
+      draftKey: r[0],
+      name: r[1] || '',
+      created: r[2] || '',
+      updated: r[3] || '',
+      picks: Number(r[4]) || 0,
+      spent: Number(r[5]) || 0,
+      teams: Number(r[6]) || 0,
+      status: r[7] || '',
+      draftId: r[8] || '',
+    }))
+    .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
+}
+
+/** Rewrites the index with this draft's row inserted or updated in place. */
+export function indexRowsWith(existingRows, state) {
+  const key = draftKeyOf(state);
+  const kept = (existingRows || [])
+    .slice(1)
+    .filter((r) => r && r[0] && r[0] !== key);
+  const rows = [INDEX_HEADERS, ...kept, indexRow(state)];
+  // Blank out any rows the list shrank past.
+  const total = Math.max(rows.length, (existingRows || []).length);
+  while (rows.length < total) rows.push(new Array(INDEX_HEADERS.length).fill(''));
+  return rows.map((r) => {
+    const row = r.slice(0, INDEX_HEADERS.length);
+    while (row.length < INDEX_HEADERS.length) row.push('');
+    return row;
+  });
 }
 
 export function logRow(state, { client = '', summary = '' } = {}) {
@@ -316,15 +418,30 @@ export function logRow(state, { client = '', summary = '' } = {}) {
   ];
 }
 
-export const CONFIG_READ_RANGE = `${TABS.CONFIG}!A1:D${MAX_CONFIG_ROWS}`;
-export const BACKUP_READ_RANGE = `${TABS.BACKUP}!A1:B${MAX_BACKUP_ROWS}`;
+export function logAppendRange(draftKey) {
+  return range(draftKey, TAB_KINDS.LOG, 'A1');
+}
 
-/** Reads just the revision/draftId pair used for the stale-write guard. */
+export function configReadRange(draftKey) {
+  return range(draftKey, TAB_KINDS.CONFIG, `A1:D${MAX_CONFIG_ROWS}`);
+}
+
+export function picksReadRange(draftKey) {
+  return range(draftKey, TAB_KINDS.PICKS, `A1:L${MAX_PICK_ROWS}`);
+}
+
+export function backupReadRange(draftKey) {
+  return range(draftKey, TAB_KINDS.BACKUP, `A1:B${MAX_BACKUP_ROWS}`);
+}
+
+/** Reads just the identity and revision used for the stale-write guard. */
 export function parseConfigHead(rows) {
-  const out = { draftId: '', revision: 0, updatedAt: '' };
+  const out = { draftId: '', draftKey: '', name: '', revision: 0, updatedAt: '' };
   for (const row of rows || []) {
     const key = row[0];
     if (key === 'draftId') out.draftId = row[1] || '';
+    else if (key === 'draftKey') out.draftKey = row[1] || '';
+    else if (key === 'name') out.name = row[1] || '';
     else if (key === 'revision') out.revision = Number(row[1]) || 0;
     else if (key === 'updatedAt') out.updatedAt = row[1] || '';
     else if (key === 'Teams') break;
@@ -362,6 +479,8 @@ function reconstruct(cfg, pickRows) {
   const state = {
     version: 1,
     draftId: '',
+    draftKey: '',
+    name: '',
     revision: 0,
     updatedAt: '',
     status: 'drafting',
@@ -387,6 +506,8 @@ function reconstruct(cfg, pickRows) {
     if (section === 'kv') {
       const value = row[1];
       if (first === 'draftId') state.draftId = value || '';
+      else if (first === 'draftKey') state.draftKey = value || '';
+      else if (first === 'name') state.name = value || '';
       else if (first === 'revision') state.revision = Number(value) || 0;
       else if (first === 'updatedAt') state.updatedAt = value || '';
       else if (first === 'status') state.status = value || 'drafting';
