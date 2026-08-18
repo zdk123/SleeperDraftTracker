@@ -297,6 +297,31 @@
     persistence.startHeartbeat();
     window.addEventListener('beforeunload', () => persistence.releaseSession());
 
+    // One deployment writes to one spreadsheet, so the sheet can be holding a
+    // draft that isn't this one. Say so plainly and let the operator choose --
+    // silently overwriting would destroy the backup of a draft in progress.
+    App.bus.on('sync:conflict', (info) => {
+      if (document.getElementById('sync-conflict-banner')) return;
+      const node = banner(
+        info.differentDraft
+          ? 'The spreadsheet is holding a different draft. Your picks are safe here, but they are not being backed up.'
+          : 'The spreadsheet has a newer copy of this draft. Your picks are safe here, but they are not being backed up.',
+        'warn',
+        [
+          {
+            label: 'Use the sheet for this draft',
+            run: () => {
+              if (window.confirm('This replaces whatever the spreadsheet currently holds. Continue?')) {
+                sync.forceOverwrite();
+              }
+            },
+          },
+          { label: 'Open Backup', run: () => openPanel('recover') },
+        ]
+      );
+      node.id = 'sync-conflict-banner';
+    });
+
     App.bus.on('storage:failed', () => {
       banner(
         'This browser stopped saving. Download a backup now and keep going.',

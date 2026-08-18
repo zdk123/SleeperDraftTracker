@@ -57,11 +57,30 @@ export default async function handler(req, res) {
       tabsEnsured = true;
     }
 
-    // Stale-write guard: never let a client with older state clobber newer data
-    // (a second tab, a restored-from-backup browser). Same draft only -- a new
-    // draftId legitimately restarts the numbering.
+    // Two different ways a write can be unsafe, both answered with a 409 the
+    // operator has to resolve deliberately.
     const head = parseConfigHead(await getValues(CONFIG_READ_RANGE));
     const sameDraft = head.draftId && head.draftId === state.draftId;
+
+    // 1. An unrelated draft. One deployment points at one spreadsheet, so a
+    //    second tab, a rehearsal, or another laptop could otherwise replace the
+    //    backup of whichever draft is actually being run.
+    if (head.draftId && !sameDraft && !body.force) {
+      return sendJson(res, 409, {
+        ok: false,
+        error: {
+          code: 'different_draft',
+          message:
+            'This spreadsheet is holding a different draft. Nothing was overwritten — ' +
+            'take it over deliberately if this is the draft you mean to keep.',
+        },
+        serverDraftId: head.draftId,
+        serverRevision: head.revision,
+        serverUpdatedAt: head.updatedAt,
+      });
+    }
+
+    // 2. Older state for the same draft (a restored browser, a stale tab).
     if (sameDraft && revision <= head.revision && !body.force) {
       return sendJson(res, 409, {
         ok: false,

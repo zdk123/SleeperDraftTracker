@@ -303,8 +303,27 @@ await test('force:true overwrites deliberately', async () => {
   assert.ok(!JSON.stringify(rosters).includes('Patrick Mahomes'), 'force should have replaced the data');
 });
 
-await test('a different draftId is not treated as stale', async () => {
+await test('a DIFFERENT draft cannot silently replace the one in the sheet', async () => {
+  // The dangerous case: a live draft is in the sheet and some other tab -- a
+  // rehearsal, a second laptop, a stale window -- syncs an unrelated draft.
+  // Overwriting here would destroy the backup for the draft actually running.
   const res = await callSync({ state: draftState({ draftId: 'draft_b', revision: 1, picks: [pick()] }) });
+  assert.equal(res.statusCode, 409, JSON.stringify(res.body));
+  assert.equal(res.body.error.code, 'different_draft');
+  assert.ok(res.body.serverDraftId, 'should say which draft is in the sheet');
+});
+
+await test('taking over the sheet for a new draft works when forced', async () => {
+  const res = await callSync({
+    state: draftState({ draftId: 'draft_b', revision: 1, picks: [pick()] }),
+    force: true,
+  });
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(res.body.forced, true);
+});
+
+await test('after taking over, the new draft syncs normally', async () => {
+  const res = await callSync({ state: draftState({ draftId: 'draft_b', revision: 2, picks: [pick()] }) });
   assert.equal(res.statusCode, 200, JSON.stringify(res.body));
 });
 
@@ -312,7 +331,7 @@ console.log('\nDeletes leave no stale rows');
 
 await test('removing a pick clears it from the sheet', async () => {
   const two = [pick(), pick({ id: 'p2', playerId: '4034', playerName: 'Bijan Robinson', position: 'RB', slot: 'RB1', price: 60, teamId: 't2' })];
-  await callSync({ state: draftState({ draftId: 'draft_c', revision: 10, picks: two }) });
+  await callSync({ state: draftState({ draftId: 'draft_c', revision: 10, picks: two }), force: true });
   let picks = [...sheet.values.entries()].find(([r]) => rangeTab(r) === TABS.PICKS)[1];
   assert.ok(JSON.stringify(picks).includes('Bijan Robinson'));
 
@@ -342,7 +361,7 @@ await test('a 403 from Sheets is reported as a sharing problem, not a quota one'
     status: 403,
     body: { error: { status: 'PERMISSION_DENIED', message: 'The caller does not have permission' } },
   };
-  const res = await callSync({ state: draftState({ draftId: 'draft_d', revision: 99, picks: [] }) });
+  const res = await callSync({ state: draftState({ draftId: 'draft_d', revision: 99, picks: [] }), force: true });
   assert.equal(res.body.error.code, 'sheet_not_shared');
   assert.ok(/share/i.test(res.body.error.hint || ''), 'should hint at sharing the sheet');
 });
@@ -352,7 +371,7 @@ await test('a rate-limit response is reported as a quota problem', async () => {
     status: 429,
     body: { error: { status: 'RESOURCE_EXHAUSTED', message: 'Quota exceeded for writes' } },
   };
-  const res = await callSync({ state: draftState({ draftId: 'draft_d', revision: 99, picks: [] }) });
+  const res = await callSync({ state: draftState({ draftId: 'draft_d', revision: 99, picks: [] }), force: true });
   assert.equal(res.statusCode, 429);
   assert.equal(res.body.error.code, 'quota_exceeded');
 });

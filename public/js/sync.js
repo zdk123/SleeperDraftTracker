@@ -85,10 +85,19 @@
       });
       const data = await res.json().catch(() => ({}));
 
-      if (res.status === 409 && data.error?.code === 'stale') {
+      // A conflict is never retried automatically -- resolving it means
+      // choosing which draft the spreadsheet should hold, which is the
+      // operator's call, not ours.
+      if (res.status === 409) {
         lastServerRevision = data.serverRevision || 0;
-        setStatus('error', 'The spreadsheet has newer data — open Recover to resolve.');
-        bus.emit('sync:stale', data);
+        const differentDraft = data.error?.code === 'different_draft';
+        setStatus(
+          'error',
+          differentDraft
+            ? 'The spreadsheet holds a different draft — open Backup to take it over.'
+            : 'The spreadsheet has newer data — open Backup to resolve.'
+        );
+        bus.emit('sync:conflict', { ...data, differentDraft });
         return;
       }
 

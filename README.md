@@ -125,6 +125,25 @@ Sync itself is best-effort and never blocks you: picks are written to the browse
 whole draft is pushed to the sheet a second or so later. If the write fails, the pill goes red, the
 app retries, and you carry on typing.
 
+#### One deployment holds one draft
+
+Worth understanding before you share the link:
+
+- **The draft lives in the browser, not on the server.** Two people opening the same hosted URL do
+  *not* see the same board — each gets their own empty setup screen. There is no spectator view;
+  the room watches the operator's screen on the TV, which is the whole design.
+- **The spreadsheet is shared, and holds one draft at a time.** A deployment has a single
+  `SHEETS_SPREADSHEET_ID`, so whoever syncs writes to that one sheet.
+- **A second draft can't quietly replace the first.** If the sheet already holds a different draft,
+  the app refuses to overwrite it and offers you the choice — so a rehearsal left open in another
+  tab can't wipe the backup of the draft you're actually running. Taking over is one deliberate
+  click.
+- **Running two real drafts at once needs two deployments** (or two spreadsheets), since there's
+  one sheet per deployment. For back-to-back drafts, just take over the sheet when you start the
+  second one — the append-only `Log` tab keeps a record of both, and export the first before you
+  do.
+- **`APP_WRITE_TOKEN` is what stops strangers writing** to your sheet if they find the URL. Set it.
+
 <details>
 <summary><b>Google Cloud setup (~15 minutes, once)</b></summary>
 
