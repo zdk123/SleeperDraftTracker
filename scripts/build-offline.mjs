@@ -3,10 +3,10 @@
 // double-clicking it -- no Node, no server, no internet, any OS.
 //
 // This is the true draft-night fallback: the hosted version needs wifi and the
-// local server needs Node installed, but this file needs neither. Google Sheets
-// sync is the only thing it can't do (that needs a server to hold credentials),
-// so it falls back to saving in the browser, which is where the draft lives
-// anyway.
+// local server needs Node installed, but this file needs neither. It backs up
+// to a Google Sheet just like the hosted app does -- the browser posts rows
+// straight to the operator's own Apps Script deployment, so no server is needed
+// to hold a credential.
 //
 // Usage: node scripts/build-offline.mjs
 

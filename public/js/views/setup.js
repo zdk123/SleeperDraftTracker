@@ -122,9 +122,11 @@
         value: '200',
         id: 'budget',
       });
+      // Sleeper's floor is $1. Zero would let $0 picks through validation and
+      // produce a draft that cannot be entered into Sleeper afterward.
       const reserveInput = el('input', {
         type: 'number',
-        min: '0',
+        min: '1',
         value: '1',
         id: 'reserve',
       });
@@ -456,7 +458,7 @@
                   name: nameInput.value,
                   settings: {
                     budgetPerTeam: Number(budgetInput.value) || 200,
-                    minBid: Number(reserveInput.value) || 0,
+                    minBid: Math.max(1, Number(reserveInput.value) || 1),
                     rosterSlots: slots.filter((s) => s.count > 0),
                     nominationStyle: styleSelect.value,
                     sleeperLeagueId: leagueInput.value.trim() || null,

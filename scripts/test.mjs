@@ -8,7 +8,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 
-import { loadSchema } from './browser-modules.mjs';
+import { loadSchema, loadBrowserModules } from './browser-modules.mjs';
 
 // The sheet mapping is a browser module; load the real file rather than a copy.
 const {
@@ -54,47 +54,7 @@ function test(name, fn) {
   }
 }
 
-// --- load the browser modules into a fake window --------------------------
-
-function loadBrowserModules() {
-  const win = { DraftApp: {} };
-  const sandbox = {
-    window: win,
-    document: { addEventListener() {} },
-    console,
-    localStorage: {
-      store: new Map(),
-      getItem(k) {
-        return this.store.has(k) ? this.store.get(k) : null;
-      },
-      setItem(k, v) {
-        this.store.set(k, String(v));
-      },
-      removeItem(k) {
-        this.store.delete(k);
-      },
-    },
-    navigator: { onLine: true },
-    setInterval() {},
-    setTimeout,
-    clearTimeout,
-    fetch: async () => {
-      throw new Error('no network in tests');
-    },
-  };
-  sandbox.globalThis = sandbox;
-
-  const files = ['utils.js', 'state.js', 'validation.js'];
-  for (const file of files) {
-    const code = readFileSync(join(ROOT, 'public', 'js', file), 'utf8');
-    // eslint-disable-next-line no-new-func
-    const fn = new Function('window', 'document', 'localStorage', 'navigator', 'console', code);
-    fn(win, sandbox.document, sandbox.localStorage, sandbox.navigator, console);
-  }
-  return win.DraftApp;
-}
-
-const App = loadBrowserModules();
+const App = loadBrowserModules(['utils.js', 'schema.js', 'state.js', 'validation.js']);
 const { store, validation } = App;
 
 function newDraft({ budget = 200, teams = 2, slots, nominationStyle = 'rotating' } = {}) {
@@ -658,6 +618,161 @@ await (async () => {
     }, 120);
   });
 })();
+
+console.log('\nRead-only mirror (second window)');
+
+test('a read-only store refuses every mutation', () => {
+  // The session lock used to set a flag nothing read: the losing window kept
+  // accepting picks and overwrote the shared localStorage key, silently
+  // discarding the other window's draft.
+  const state = newDraft({ budget: 100, teams: 2 });
+  const team = state.teams[0].id;
+  store.addPick({ playerId: 'a1', playerName: 'Before', position: 'QB', teamId: team, price: 5, slot: 'QB' });
+  const before = JSON.stringify(store.get());
+
+  store.setReadOnly(true);
+  try {
+    assert.equal(store.addPick({ playerId: 'a2', playerName: 'Blocked', position: 'RB', teamId: team, price: 5, slot: 'RB1' }), null);
+    assert.equal(store.updatePick(store.get().picks[0].id, { price: 99 }), null);
+    assert.equal(store.removePick(store.get().picks[0].id), null);
+    assert.equal(store.undoLast(), null);
+    assert.equal(store.updateSettings({ budgetPerTeam: 1 }), null);
+    assert.equal(store.updateTeams([]), null);
+    assert.equal(store.setNominationOrder([]), null);
+    assert.equal(JSON.stringify(store.get()), before, 'state must be untouched');
+  } finally {
+    store.setReadOnly(false);
+  }
+});
+
+test('a blocked mutation says so rather than failing silently', () => {
+  const state = newDraft();
+  const seen = [];
+  App.bus.on('state:readonly-blocked', (e) => seen.push(e.action));
+  store.setReadOnly(true);
+  try {
+    store.addPick({ playerId: 'x', playerName: 'X', position: 'QB', teamId: state.teams[0].id, price: 1, slot: 'QB' });
+    assert.deepEqual(seen, ['add a pick']);
+  } finally {
+    store.setReadOnly(false);
+  }
+});
+
+test('taking over restores the ability to write', () => {
+  const state = newDraft();
+  store.setReadOnly(true);
+  store.setReadOnly(false);
+  const pick = store.addPick({ playerId: 'y', playerName: 'Y', position: 'QB', teamId: state.teams[0].id, price: 3, slot: 'QB' });
+  assert.ok(pick, 'writes must resume after taking over');
+});
+
+console.log('\nNomination order');
+
+test('a skipped team does not hand the next team two turns in a row', () => {
+  // Three teams, two spots each. Team 1 fills up first, and the rotation must
+  // carry on 2, 3 rather than repeating the team that absorbed the skip.
+  const state = newDraft({
+    budget: 100,
+    teams: 3,
+    slots: [{ slotKey: 'FLEX', label: 'FLEX', count: 2, eligiblePositions: ['RB', 'WR'] }],
+  });
+  const [a, b, c] = state.teams.map((t) => t.id);
+  const winners = [a, a, b, c, b, c];
+  const seq = [];
+  winners.forEach((teamId, i) => {
+    seq.push(store.currentNominator());
+    store.addPick({
+      playerId: `p${i}`, playerName: `P${i}`, position: 'RB',
+      teamId, price: 1, slot: `FLEX${winners.slice(0, i + 1).filter((w) => w === teamId).length}`,
+    });
+  });
+
+  assert.deepEqual(seq.slice(0, 3), [a, b, c], 'the plain rotation comes first');
+  assert.equal(seq[3], b, 'team 1 is full, so its turn passes to team 2');
+  assert.notEqual(seq[4], seq[3], 'team 2 must not nominate twice in a row');
+  assert.equal(seq[4], c);
+});
+
+test('the nominator is a function of history, so it survives a restore', () => {
+  const state = newDraft({
+    budget: 100, teams: 3,
+    slots: [{ slotKey: 'FLEX', label: 'FLEX', count: 2, eligiblePositions: ['RB'] }],
+  });
+  const [a, b] = state.teams.map((t) => t.id);
+  store.addPick({ playerId: 'r1', playerName: 'R1', position: 'RB', teamId: a, price: 1, slot: 'FLEX1' });
+  store.addPick({ playerId: 'r2', playerName: 'R2', position: 'RB', teamId: a, price: 1, slot: 'FLEX2' });
+  store.addPick({ playerId: 'r3', playerName: 'R3', position: 'RB', teamId: b, price: 1, slot: 'FLEX1' });
+  const expected = store.currentNominator();
+
+  // Reload the very same state, as a restore-from-sheet would.
+  store.load(JSON.parse(JSON.stringify(store.get())), 'restore');
+  assert.equal(store.currentNominator(), expected, 'no hidden cursor may be lost on reload');
+});
+
+test('nobody nominates once every team is full', () => {
+  const state = newDraft({
+    budget: 20, teams: 2,
+    slots: [{ slotKey: 'QB', label: 'QB', count: 1, eligiblePositions: ['QB'] }],
+  });
+  const [a, b] = state.teams.map((t) => t.id);
+  store.addPick({ playerId: 'z1', playerName: 'Z1', position: 'QB', teamId: a, price: 1, slot: 'QB' });
+  store.addPick({ playerId: 'z2', playerName: 'Z2', position: 'QB', teamId: b, price: 1, slot: 'QB' });
+  assert.equal(store.currentNominator(), null);
+});
+
+console.log('\nEditing a pick obeys the same rules as adding one');
+
+test('an edit cannot duplicate a player already drafted', () => {
+  const state = newDraft({ budget: 100, teams: 2 });
+  const [a, b] = state.teams.map((t) => t.id);
+  store.addPick({ playerId: 'dup', playerName: 'Taken Guy', position: 'QB', teamId: a, price: 5, slot: 'QB' });
+  const second = store.addPick({ playerId: 'other', playerName: 'Someone Else', position: 'RB', teamId: b, price: 5, slot: 'RB1' });
+
+  const result = validation.check({
+    playerId: 'dup', playerName: 'Taken Guy', position: 'QB',
+    teamId: b, price: 5, ignorePickId: second.id,
+  });
+  assert.ok(result.blockers.some((x) => x.code === 'duplicate'));
+});
+
+test('a pick does not count as its own duplicate when edited', () => {
+  const state = newDraft({ budget: 100, teams: 2 });
+  const team = state.teams[0].id;
+  const pick = store.addPick({ playerId: 'me', playerName: 'Me', position: 'QB', teamId: team, price: 5, slot: 'QB' });
+
+  const result = validation.check({
+    playerId: 'me', playerName: 'Me', position: 'QB',
+    teamId: team, price: 7, ignorePickId: pick.id,
+  });
+  assert.deepEqual(result.blockers, [], JSON.stringify(result.blockers));
+});
+
+test('an edit cannot push a team past its max bid', () => {
+  const state = newDraft({ budget: 10, teams: 2 });
+  const team = state.teams[0].id;
+  const pick = store.addPick({ playerId: 'p', playerName: 'P', position: 'QB', teamId: team, price: 1, slot: 'QB' });
+  // 4 slots, $10: with this pick discounted the team may bid at most $7.
+  const ok = validation.check({ playerId: 'p', playerName: 'P', position: 'QB', teamId: team, price: 7, ignorePickId: pick.id });
+  assert.deepEqual(ok.blockers, [], JSON.stringify(ok.blockers));
+  const bad = validation.check({ playerId: 'p', playerName: 'P', position: 'QB', teamId: team, price: 8, ignorePickId: pick.id });
+  assert.ok(bad.blockers.some((x) => x.code === 'over_budget'), 'an $8 edit must be refused');
+});
+
+test('an edit cannot move a pick onto a full roster', () => {
+  const state = newDraft({
+    budget: 100, teams: 2,
+    slots: [{ slotKey: 'QB', label: 'QB', count: 1, eligiblePositions: ['QB'] }],
+  });
+  const [a, b] = state.teams.map((t) => t.id);
+  store.addPick({ playerId: 'q1', playerName: 'Q1', position: 'QB', teamId: a, price: 5, slot: 'QB' });
+  const mine = store.addPick({ playerId: 'q2', playerName: 'Q2', position: 'QB', teamId: b, price: 5, slot: 'QB' });
+
+  const result = validation.check({
+    playerId: 'q2', playerName: 'Q2', position: 'QB',
+    teamId: a, price: 5, ignorePickId: mine.id,
+  });
+  assert.ok(result.blockers.some((x) => x.code === 'roster_full'));
+});
 
 console.log('\nOffline shell');
 

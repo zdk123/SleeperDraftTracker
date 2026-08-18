@@ -1,6 +1,7 @@
 // Cache-first app shell so a mid-draft wifi drop plus a page reload doesn't
-// leave the operator staring at a white screen. API calls always go to the
-// network -- a cached sync response would be actively harmful.
+// leave the operator staring at a white screen. Only same-origin assets are
+// cached; the Apps Script deployment is cross-origin and so is never touched
+// here -- a cached sync response would be actively harmful.
 
 // Bump this whenever SHELL changes: it is what evicts a stale cache, and a
 // half-updated shell is worse than no cache at all.
@@ -52,7 +53,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  if (url.pathname.includes('/api/') || url.origin !== self.location.origin) return;
+  if (url.origin !== self.location.origin) return;
   if (event.request.method !== 'GET') return;
 
   event.respondWith(

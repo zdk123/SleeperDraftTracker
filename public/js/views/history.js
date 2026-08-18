@@ -25,12 +25,36 @@
     );
     const priceInput = el('input', { type: 'number', min: '0', value: String(pick.price), class: 'mini' });
 
+    // An edit goes through the same guardrails as a new pick. Without this it
+    // was possible to edit a pick into a duplicate player, a full roster, or a
+    // price above the team's legal max -- producing a draft that could not be
+    // entered into Sleeper afterward, which is the one thing these rules exist
+    // to guarantee.
     const save = () => {
-      store.updatePick(pick.id, {
+      const changes = {
         playerName: nameInput.value.trim() || pick.playerName,
         teamId: teamSelect.value,
         price: Number(priceInput.value) || 0,
+      };
+      const result = App.validation.check({
+        ...changes,
+        playerId: pick.playerId,
+        position: pick.position,
+        slot: pick.slot,
+        ignorePickId: pick.id,
       });
+
+      const hard = result.blockers.filter((b) => !b.overridable);
+      if (hard.length) {
+        window.alert(`${hard.map((b) => `• ${b.message}`).join('\n')}\n\nThe edit was not saved.`);
+        return;
+      }
+      if (result.blockers.length) {
+        const lines = result.blockers.map((b) => `• ${b.message}`).join('\n');
+        if (!window.confirm(`${lines}\n\nSave this edit anyway?`)) return;
+      }
+
+      store.updatePick(pick.id, changes);
       editingId = null;
       rerender();
     };

@@ -15,10 +15,13 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * @param {string[]} files - paths under public/js, in dependency order.
+ * @param {object} [seed] - properties placed on window.DraftApp before any file
+ *   runs, so a module that destructures a collaborator at load time can be
+ *   given a fake one (restore.js takes App.sync this way).
  * @returns the populated window.DraftApp namespace.
  */
-export function loadBrowserModules(files = ['schema.js']) {
-  const win = { DraftApp: {} };
+export function loadBrowserModules(files = ['schema.js'], seed = {}) {
+  const win = { DraftApp: { ...seed } };
   const sandbox = {
     window: win,
     document: { addEventListener() {} },

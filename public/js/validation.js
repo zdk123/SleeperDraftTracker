@@ -21,14 +21,48 @@
   // Slot classification stays overridable: which spot a player fills is a
   // judgment call (FLEX especially), not a money rule.
 
+  /**
+   * A team's budget/slot position with one pick discounted, so an edit is
+   * judged against what the team would look like without the pick being
+   * changed rather than with it counted twice.
+   */
+  function summaryExcluding(teamId, ignorePickId) {
+    const summary = store.teamSummary(teamId);
+    if (!ignorePickId) return summary;
+
+    const pick = store.get().picks.find((p) => p.id === ignorePickId);
+    if (!pick || pick.teamId !== teamId) return summary;
+
+    const spent = summary.spent - (Number(pick.price) || 0);
+    const filled = summary.filled - 1;
+    const open = store.totalSlots() - filled;
+    const reserve = store.minBid();
+    return {
+      ...summary,
+      spent,
+      filled,
+      open,
+      remaining: summary.budget - spent,
+      maxBid: open <= 0 ? 0 : Math.max(0, summary.budget - spent - (open - 1) * reserve),
+    };
+  }
+
   App.validation = {
     /**
      * @returns {{blockers: Array, warnings: Array, slotOptions: Array, canOverride: boolean}}
      */
-    check({ teamId, playerId, playerName, position, price, slot }) {
+    /**
+     * @param ignorePickId - when re-checking an existing pick (an edit), the
+     *   pick being changed must not count against itself: it would flag its own
+     *   player as a duplicate and its own price against the team's budget.
+     */
+    check({ teamId, playerId, playerName, position, price, slot, ignorePickId }) {
       const blockers = [];
       const warnings = [];
       const state = store.get();
+      const others = ignorePickId
+        ? state.picks.filter((p) => p.id !== ignorePickId)
+        : state.picks;
 
       if (!teamId) blockers.push({ code: 'no_team', message: 'Pick a team.', overridable: false });
       if (!playerName) {
@@ -49,7 +83,7 @@
 
       // Duplicate player: hard block, never overridable.
       if (playerId) {
-        const existing = state.picks.find((p) => p.playerId === playerId);
+        const existing = others.find((p) => p.playerId === playerId);
         if (existing) {
           const owner = store.teamById(existing.teamId);
           blockers.push({
@@ -59,7 +93,7 @@
           });
         }
       } else if (playerName) {
-        const existing = state.picks.find(
+        const existing = others.find(
           (p) => p.playerName.toLowerCase() === playerName.toLowerCase()
         );
         if (existing) {
@@ -74,7 +108,7 @@
 
       let slotOptions = [];
       if (teamId) {
-        const summary = store.teamSummary(teamId);
+        const summary = summaryExcluding(teamId, ignorePickId);
         const team = store.teamById(teamId);
 
         if (summary.open === 0) {
@@ -97,7 +131,7 @@
         }
 
         if (position) {
-          slotOptions = store.eligibleOpenSlots(teamId, position);
+          slotOptions = store.eligibleOpenSlots(teamId, position, ignorePickId);
           if (!slotOptions.length && summary.open > 0) {
             blockers.push({
               code: 'slot_full',
@@ -105,7 +139,7 @@
               overridable: true,
             });
             // Offer any open slot when overriding -- FLEX eligibility is fuzzy.
-            slotOptions = store.openSlotCodes(teamId);
+            slotOptions = store.openSlotCodes(teamId, ignorePickId);
           }
         }
 

@@ -287,7 +287,8 @@ restore. This only works if you set up the Google Sheet.
 **You accidentally cleared the browser / opened a fresh profile.** Same as above, or import the last
 JSON backup you exported.
 
-**Two windows open at once.** The app notices and puts the second one in read-only mode so they
+**Two windows open at once.** The app notices and puts the second one in read-only mode — it
+refuses every write, not just warns — so they
 can't fight over the same draft. Use the one you've been typing into, or click "Take over".
 
 ---
@@ -326,6 +327,7 @@ is why the standalone HTML file can back up to a sheet with nothing running behi
 
 ```bash
 node scripts/test.mjs                                   # draft rules, budgets, sheet mapping
+node scripts/test-restore.mjs                           # the compare/restore recovery paths
 node scripts/test-apps-script.mjs                       # runs apps-script/Code.gs against a fake sheet
 node server.js &                                        # then, in another shell:
 node --experimental-websocket scripts/browser-test.mjs  # drives the real UI in headless Chrome
@@ -341,9 +343,9 @@ node scripts/build-offline.mjs                          # rebuild DraftBoard-off
 the real UI and then reconciles four independent copies of the truth — what was entered, the app's
 state, localStorage, and the sheet — plus every export. They cover the standalone file with no
 server at all, the local server writing to a sheet, a network outage across a third of the draft, a
-crash-and-reload mid-draft, and the standalone file backing up to a sheet from `file://`. Run them
-after touching state, sync, or persistence; they found a real sync-starvation bug that none of the
-unit tests could see.
+crash-and-reload mid-draft, the standalone file backing up to a sheet from `file://`, and a second
+window being unable to clobber the draft. Run them after touching state, sync, or persistence; they
+found a real sync-starvation bug that none of the unit tests could see.
 
 `test-apps-script.mjs` loads `apps-script/Code.gs` from disk and runs it unmodified against a fake
 `SpreadsheetApp`, so a bug in the file the operator pastes into their sheet is a failing test here.

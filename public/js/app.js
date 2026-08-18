@@ -142,6 +142,10 @@
               match: 'The sheet matches this computer.',
               'local-ahead': 'This computer is ahead — use “Save to sheet now”.',
               'remote-ahead': `The sheet has a newer copy (${remote?.state.picks.length} picks).`,
+              diverged:
+                `The sheet disagrees with this screen (${remote?.state.picks.length} picks there, ` +
+                `${store.get().picks.length} here). This computer's copy is the one you have been ` +
+                'watching — use “Save to sheet now” unless you know otherwise.',
               'local-only': 'This draft is not in the sheet yet.',
               'remote-only': `The sheet has a draft with ${remote?.state.picks.length} picks.`,
               'no-remote': 'Could not reach the sheet. Your picks are still safe here.',
@@ -336,6 +340,7 @@
     // A second tab on a full-snapshot sync model is a genuine data-loss path.
     if (!persistence.claimSession()) {
       readOnly = true;
+      store.setReadOnly(true);
       banner(
         'This draft is already open in another window. Enter picks there, or take over here.',
         'warn',
@@ -345,6 +350,7 @@
             run: () => {
               persistence.takeoverSession();
               readOnly = false;
+              store.setReadOnly(false);
               window.location.reload();
             },
           },
@@ -377,6 +383,26 @@
         ]
       );
       node.id = 'sync-conflict-banner';
+    });
+
+    // A blocked write has to be visible. Silently dropping a pick in a mirror
+    // window is exactly the failure the lock exists to prevent.
+    App.bus.on('state:readonly-blocked', ({ action }) => {
+      banner(
+        `This window is a read-only mirror, so it can't ${action}. ` +
+          'Use the window where the draft is already open, or take over here.',
+        'warn',
+        [
+          {
+            label: 'Take over',
+            run: () => {
+              persistence.takeoverSession();
+              store.setReadOnly(false);
+              window.location.reload();
+            },
+          },
+        ]
+      );
     });
 
     App.bus.on('storage:failed', () => {

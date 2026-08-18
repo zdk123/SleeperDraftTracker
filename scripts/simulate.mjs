@@ -116,6 +116,7 @@ class Browser {
       /* nothing there: good */
     }
 
+    this.debugPort = port;
     this.profile = await mkdtemp(join(tmpdir(), 'sim-chrome-'));
     this.chrome = spawn(
       CHROME,
@@ -234,6 +235,48 @@ class Browser {
     );
   }
 
+  /**
+   * A second tab in the SAME Chrome, so it shares localStorage with the first.
+   * That sharing is the whole point: two windows on one draft is the scenario
+   * the session lock exists for.
+   */
+  async openSecondTab(url) {
+    const created = await (
+      await fetch(`http://127.0.0.1:${this.debugPort}/json/new?${encodeURIComponent(url)}`, {
+        method: 'PUT',
+      })
+    ).json();
+
+    const tab = new Browser();
+    tab.debugPort = this.debugPort;
+    tab.ws = new WebSocket(created.webSocketDebuggerUrl);
+    await new Promise((res, rej) => {
+      tab.ws.addEventListener('open', res, { once: true });
+      tab.ws.addEventListener('error', rej, { once: true });
+    });
+    tab.ws.addEventListener('message', (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.id && tab.pending.has(msg.id)) {
+        const { resolve, reject } = tab.pending.get(msg.id);
+        tab.pending.delete(msg.id);
+        if (msg.error) reject(new Error(msg.error.message));
+        else resolve(msg.result);
+        return;
+      }
+      if (msg.method === 'Runtime.exceptionThrown') {
+        tab.pageErrors.push(
+          msg.params.exceptionDetails.exception?.description || msg.params.exceptionDetails.text
+        );
+      }
+    });
+    await tab.send('Runtime.enable');
+    await tab.send('Page.enable');
+    // It shares the parent's Chrome, so it must not kill it on close.
+    tab.chrome = null;
+    tab.profile = null;
+    return tab;
+  }
+
   setOffline(offline) {
     return this.send('Network.emulateNetworkConditions', {
       offline,
@@ -249,7 +292,8 @@ class Browser {
     } catch {
       /* ignore */
     }
-    this.chrome?.kill();
+    if (!this.chrome) return; // a second tab: the parent owns the browser
+    this.chrome.kill();
     for (let i = 0; i < 5; i += 1) {
       try {
         await rm(this.profile, { recursive: true, force: true });
@@ -808,6 +852,81 @@ function appsScriptSheetView(spreadsheet) {
   return { values, writes: values.size };
 }
 
+/**
+ * Two windows on one draft -- the failure the session lock exists to prevent.
+ *
+ * Both share localStorage, and on a full-snapshot model each would write its
+ * own pick list over the other's, with the last writer silently winning. The
+ * second window must therefore refuse to write at all, not merely show a
+ * warning: a banner nobody reads is not a guard.
+ */
+async function scenarioTwoWindows() {
+  const name = 'F. A second window cannot clobber the draft';
+  console.log(`\n${name}`);
+  await assertPortFree(8793, 'scenario F');
+  const app = startAppServer(8793);
+  await waitForServer(8793, 'app server');
+
+  const browser = new Browser();
+  await browser.launch(9406);
+  let second = null;
+  try {
+    await browser.goto('http://localhost:8793/');
+    await browser.waitFor('document.querySelectorAll(".team-row").length > 0', 'setup screen');
+    await setupDraft(browser);
+
+    const intended = await runFullDraftPartial(browser, 30, 61);
+    console.log(`    (first window entered ${intended.length} picks)`);
+
+    // Open a second tab on the same origin: same localStorage, same draft.
+    second = await browser.openSecondTab('http://localhost:8793/');
+    await second.waitFor('!!(window.DraftApp && DraftApp.store.exists())', 'the second window');
+
+    check(name, 'the second window knows it is a mirror',
+      (await second.eval('DraftApp.store.isReadOnly()')) === true);
+    check(name, 'and says so on screen',
+      /already open in another window/i.test(await second.eval('document.body.innerText')));
+
+    // Try every write path from the mirror.
+    const before = await browser.eval('DraftApp.store.get().picks.length');
+    const blocked = JSON.parse(await second.eval(`(() => {
+      const s = DraftApp.store;
+      const first = s.get().picks[0];
+      return JSON.stringify({
+        add: s.addPick({ playerId: 'zz', playerName: 'Intruder', position: 'QB',
+                         teamId: s.get().teams[0].id, price: 1, slot: 'QB' }),
+        edit: s.updatePick(first.id, { price: 999 }),
+        remove: s.removePick(first.id),
+        undo: s.undoLast(),
+        count: s.get().picks.length
+      });
+    })()`));
+    check(name, 'every write from the mirror is refused',
+      blocked.add === null && blocked.edit === null && blocked.remove === null && blocked.undo === null,
+      JSON.stringify(blocked));
+    check(name, 'the mirror did not change its own copy either',
+      blocked.count === before, `${blocked.count} vs ${before}`);
+
+    // The real window keeps working, and its picks survive the mirror's attempts.
+    const more = await runFullDraft(browser, { seed: 67 });
+    const all = intended.concat(more);
+    console.log(`    (first window finished at ${all.length} picks)`);
+
+    const stored = JSON.parse(
+      await browser.eval(`JSON.stringify(JSON.parse(localStorage.getItem('sleeperDraftTracker.state.v1')).picks.map(p => p.playerName))`)
+    );
+    check(name, 'localStorage holds the real window’s draft, not the mirror’s',
+      stored.length === all.length && !stored.includes('Intruder'),
+      `${stored.length} stored vs ${all.length} entered`);
+
+    await reconcile(name, browser, all, null);
+  } finally {
+    if (second) await second.close();
+    await browser.close();
+    app.kill();
+  }
+}
+
 /** Same as runFullDraft but stops after `limit` picks. */
 async function runFullDraftPartial(browser, limit, seed) {
   const all = [];
@@ -876,12 +995,13 @@ async function main() {
     c: scenarioConnectionDropsMidDraft,
     d: scenarioCrashAndReload,
     e: scenarioStandaloneFileWithSheet,
+    f: scenarioTwoWindows,
   };
 
   console.log(`Full-draft simulations — ${TEAMS.length} teams × ${SPOTS_PER_TEAM} spots = ${TOTAL_PICKS} picks each`);
 
   const toRun = only ? [scenarios[only.toLowerCase()]].filter(Boolean) : Object.values(scenarios);
-  if (!toRun.length) throw new Error(`Unknown scenario "${only}" (use a, b, c, d or e)`);
+  if (!toRun.length) throw new Error(`Unknown scenario "${only}" (use a, b, c, d, e or f)`);
 
   for (const scenario of toRun) await scenario();
 

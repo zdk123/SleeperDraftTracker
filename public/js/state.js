@@ -24,7 +24,18 @@
   ];
 
   let state = null;
+  let readOnly = false;
   const listeners = new Set();
+
+  /**
+   * Blocks a mutation while this window is a read-only mirror, and says so out
+   * loud -- a silently ignored pick would be worse than the write it prevents.
+   */
+  function refuse(action) {
+    if (!readOnly) return false;
+    App.bus.emit('state:readonly-blocked', { action });
+    return true;
+  }
 
   function emit(reason) {
     for (const fn of listeners) {
@@ -56,6 +67,20 @@
 
     exists() {
       return Boolean(state);
+    },
+
+    /**
+     * A second window that lost the session lock is a real data-loss path: on a
+     * full-snapshot sync model both windows would write their own pick list
+     * over the shared one, and the last writer would silently win.
+     */
+    setReadOnly(value) {
+      readOnly = Boolean(value);
+      return readOnly;
+    },
+
+    isReadOnly() {
+      return readOnly;
     },
 
     /** Installs a state object wholesale (new draft, resume, or restore). */
@@ -176,26 +201,58 @@
     currentNominator() {
       const order = (state.nominationOrder || []).filter((id) => Store.teamById(id));
       if (!order.length) return null;
-
-      const eligible = order.filter((id) => Store.canBid(id));
-      if (!eligible.length) return null;
+      if (!order.some((id) => Store.canBid(id))) return null;
 
       const snake = state.settings.nominationStyle === 'snake';
-      // Walk forward from the current position until an eligible team turns up,
-      // so skipped teams don't stall the order.
-      for (let step = 0; step < order.length * 2 + 2; step += 1) {
-        const n = state.picks.length + step;
-        const round = Math.floor(n / order.length);
-        const indexInRound = n % order.length;
-        const index =
-          snake && round % 2 === 1 ? order.length - 1 - indexInRound : indexInRound;
-        const teamId = order[index];
-        if (Store.canBid(teamId)) return teamId;
+      const slotTotal = Store.totalSlots();
+      const budget = Number(state.settings.budgetPerTeam) || 0;
+      const reserve = Store.minBid();
+
+      /** Which team sits at nomination position `p`. */
+      const teamAt = (p) => {
+        const round = Math.floor(p / order.length);
+        const indexInRound = p % order.length;
+        return order[snake && round % 2 === 1 ? order.length - 1 - indexInRound : indexInRound];
+      };
+
+      // Eligibility as it stood partway through the draft, so the rotation can
+      // be replayed. Mirrors canBid(), but from a running tally rather than
+      // from the finished pick list.
+      const spent = new Map(order.map((id) => [id, 0]));
+      const filled = new Map(order.map((id) => [id, 0]));
+      const couldBid = (id) => {
+        const open = slotTotal - (filled.get(id) || 0);
+        if (open <= 0) return false;
+        const maxBid = budget - (spent.get(id) || 0) - (open - 1) * reserve;
+        return maxBid >= reserve;
+      };
+
+      // Replay the whole draft, advancing one position per pick and stepping
+      // over teams that were already full. A skipped team consumes nothing:
+      // recomputing this from picks.length alone used to let the team after a
+      // skip nominate twice in a row and quietly drop the next team's turn.
+      const picks = state.picks || [];
+      let p = 0;
+      for (let k = 0; k <= picks.length; k += 1) {
+        let guard = 0;
+        while (!couldBid(teamAt(p)) && guard < order.length * 2 + 2) {
+          p += 1;
+          guard += 1;
+        }
+        if (k === picks.length) return couldBid(teamAt(p)) ? teamAt(p) : null;
+
+        const pick = picks[k];
+        if (spent.has(pick.teamId)) {
+          spent.set(pick.teamId, spent.get(pick.teamId) + (Number(pick.price) || 0));
+          filled.set(pick.teamId, filled.get(pick.teamId) + 1);
+        }
+        p += 1;
       }
-      return eligible[0];
+      return null;
     },
 
     setNominationOrder(order) {
+      if (refuse('change the nomination order')) return null;
       state.nominationOrder = order.slice();
       touch('nomination');
     },
@@ -209,19 +266,36 @@
     },
 
     /** Slot codes with nothing in them yet, for a team. */
-    openSlotCodes(teamId) {
-      const taken = new Set(Store.picksFor(teamId).map((p) => p.slot));
+    /**
+     * @param ignorePickId - the slot held by this pick counts as open. Editing
+     *   a pick must not see the pick's own slot as occupied by someone else.
+     */
+    openSlotCodes(teamId, ignorePickId) {
+      const taken = new Set(
+        Store.picksFor(teamId)
+          .filter((p) => p.id !== ignorePickId)
+          .map((p) => p.slot)
+      );
       return Store.expandSlots().filter((s) => !taken.has(s.code));
     },
 
     /** Open slots whose eligible positions include this one. */
-    eligibleOpenSlots(teamId, position) {
-      return Store.openSlotCodes(teamId).filter((s) => s.eligiblePositions.includes(position));
+    eligibleOpenSlots(teamId, position, ignorePickId) {
+      return Store.openSlotCodes(teamId, ignorePickId).filter((s) =>
+        s.eligiblePositions.includes(position)
+      );
     },
 
     // --- mutations ----------------------------------------------------------
+    //
+    // Every one of these refuses while read-only. The guard lives here rather
+    // than in the views because a second window losing the session lock must
+    // not be able to write through ANY path -- entry form, history edit,
+    // keyboard shortcut, or the console. A view-level check is a guard you have
+    // to remember to add to each new caller; this one cannot be forgotten.
 
     addPick(pick) {
+      if (refuse('add a pick')) return null;
       const record = {
         id: uid('pick'),
         playerId: pick.playerId || '',
@@ -241,6 +315,7 @@
     },
 
     updatePick(pickId, changes) {
+      if (refuse('edit a pick')) return null;
       const pick = state.picks.find((p) => p.id === pickId);
       if (!pick) return null;
       Object.assign(pick, changes, {
@@ -251,6 +326,7 @@
     },
 
     removePick(pickId) {
+      if (refuse('delete a pick')) return null;
       const index = state.picks.findIndex((p) => p.id === pickId);
       if (index === -1) return null;
       const [removed] = state.picks.splice(index, 1);
@@ -259,6 +335,7 @@
     },
 
     undoLast() {
+      if (refuse('undo')) return null;
       if (!state.picks.length) return null;
       const removed = state.picks.pop();
       touch('pick:undo');
@@ -266,11 +343,13 @@
     },
 
     updateSettings(changes) {
+      if (refuse('change settings')) return null;
       Object.assign(state.settings, changes);
       touch('settings');
     },
 
     updateTeams(teams) {
+      if (refuse('change teams')) return null;
       state.teams = teams;
       touch('teams');
     },

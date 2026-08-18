@@ -62,16 +62,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  const configured = Boolean(
-    process.env.GOOGLE_SA_EMAIL &&
-      process.env.GOOGLE_SA_PRIVATE_KEY_B64 &&
-      process.env.SHEETS_SPREADSHEET_ID
-  );
   console.log(`\n  Draft board running at  http://localhost:${PORT}\n`);
-  console.log(
-    configured
-      ? '  Google Sheets sync: configured\n'
-      : '  Google Sheets sync: OFF (no .env.local) - the draft saves locally in the browser\n'
-  );
+  console.log('  The Google Sheet backup is set up in the app, on the setup screen.\n');
   console.log('  Press Ctrl+C to stop.\n');
 });

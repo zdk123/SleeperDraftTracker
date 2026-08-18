@@ -1883,7 +1883,18 @@ function reconstruct(cfg, pickRows) {
   ];
 
   let state = null;
+  let readOnly = false;
   const listeners = new Set();
+
+  /**
+   * Blocks a mutation while this window is a read-only mirror, and says so out
+   * loud -- a silently ignored pick would be worse than the write it prevents.
+   */
+  function refuse(action) {
+    if (!readOnly) return false;
+    App.bus.emit('state:readonly-blocked', { action });
+    return true;
+  }
 
   function emit(reason) {
     for (const fn of listeners) {
@@ -1915,6 +1926,20 @@ function reconstruct(cfg, pickRows) {
 
     exists() {
       return Boolean(state);
+    },
+
+    /**
+     * A second window that lost the session lock is a real data-loss path: on a
+     * full-snapshot sync model both windows would write their own pick list
+     * over the shared one, and the last writer would silently win.
+     */
+    setReadOnly(value) {
+      readOnly = Boolean(value);
+      return readOnly;
+    },
+
+    isReadOnly() {
+      return readOnly;
     },
 
     /** Installs a state object wholesale (new draft, resume, or restore). */
@@ -2035,26 +2060,58 @@ function reconstruct(cfg, pickRows) {
     currentNominator() {
       const order = (state.nominationOrder || []).filter((id) => Store.teamById(id));
       if (!order.length) return null;
-
-      const eligible = order.filter((id) => Store.canBid(id));
-      if (!eligible.length) return null;
+      if (!order.some((id) => Store.canBid(id))) return null;
 
       const snake = state.settings.nominationStyle === 'snake';
-      // Walk forward from the current position until an eligible team turns up,
-      // so skipped teams don't stall the order.
-      for (let step = 0; step < order.length * 2 + 2; step += 1) {
-        const n = state.picks.length + step;
-        const round = Math.floor(n / order.length);
-        const indexInRound = n % order.length;
-        const index =
-          snake && round % 2 === 1 ? order.length - 1 - indexInRound : indexInRound;
-        const teamId = order[index];
-        if (Store.canBid(teamId)) return teamId;
+      const slotTotal = Store.totalSlots();
+      const budget = Number(state.settings.budgetPerTeam) || 0;
+      const reserve = Store.minBid();
+
+      /** Which team sits at nomination position `p`. */
+      const teamAt = (p) => {
+        const round = Math.floor(p / order.length);
+        const indexInRound = p % order.length;
+        return order[snake && round % 2 === 1 ? order.length - 1 - indexInRound : indexInRound];
+      };
+
+      // Eligibility as it stood partway through the draft, so the rotation can
+      // be replayed. Mirrors canBid(), but from a running tally rather than
+      // from the finished pick list.
+      const spent = new Map(order.map((id) => [id, 0]));
+      const filled = new Map(order.map((id) => [id, 0]));
+      const couldBid = (id) => {
+        const open = slotTotal - (filled.get(id) || 0);
+        if (open <= 0) return false;
+        const maxBid = budget - (spent.get(id) || 0) - (open - 1) * reserve;
+        return maxBid >= reserve;
+      };
+
+      // Replay the whole draft, advancing one position per pick and stepping
+      // over teams that were already full. A skipped team consumes nothing:
+      // recomputing this from picks.length alone used to let the team after a
+      // skip nominate twice in a row and quietly drop the next team's turn.
+      const picks = state.picks || [];
+      let p = 0;
+      for (let k = 0; k <= picks.length; k += 1) {
+        let guard = 0;
+        while (!couldBid(teamAt(p)) && guard < order.length * 2 + 2) {
+          p += 1;
+          guard += 1;
+        }
+        if (k === picks.length) return couldBid(teamAt(p)) ? teamAt(p) : null;
+
+        const pick = picks[k];
+        if (spent.has(pick.teamId)) {
+          spent.set(pick.teamId, spent.get(pick.teamId) + (Number(pick.price) || 0));
+          filled.set(pick.teamId, filled.get(pick.teamId) + 1);
+        }
+        p += 1;
       }
-      return eligible[0];
+      return null;
     },
 
     setNominationOrder(order) {
+      if (refuse('change the nomination order')) return null;
       state.nominationOrder = order.slice();
       touch('nomination');
     },
@@ -2068,19 +2125,36 @@ function reconstruct(cfg, pickRows) {
     },
 
     /** Slot codes with nothing in them yet, for a team. */
-    openSlotCodes(teamId) {
-      const taken = new Set(Store.picksFor(teamId).map((p) => p.slot));
+    /**
+     * @param ignorePickId - the slot held by this pick counts as open. Editing
+     *   a pick must not see the pick's own slot as occupied by someone else.
+     */
+    openSlotCodes(teamId, ignorePickId) {
+      const taken = new Set(
+        Store.picksFor(teamId)
+          .filter((p) => p.id !== ignorePickId)
+          .map((p) => p.slot)
+      );
       return Store.expandSlots().filter((s) => !taken.has(s.code));
     },
 
     /** Open slots whose eligible positions include this one. */
-    eligibleOpenSlots(teamId, position) {
-      return Store.openSlotCodes(teamId).filter((s) => s.eligiblePositions.includes(position));
+    eligibleOpenSlots(teamId, position, ignorePickId) {
+      return Store.openSlotCodes(teamId, ignorePickId).filter((s) =>
+        s.eligiblePositions.includes(position)
+      );
     },
 
     // --- mutations ----------------------------------------------------------
+    //
+    // Every one of these refuses while read-only. The guard lives here rather
+    // than in the views because a second window losing the session lock must
+    // not be able to write through ANY path -- entry form, history edit,
+    // keyboard shortcut, or the console. A view-level check is a guard you have
+    // to remember to add to each new caller; this one cannot be forgotten.
 
     addPick(pick) {
+      if (refuse('add a pick')) return null;
       const record = {
         id: uid('pick'),
         playerId: pick.playerId || '',
@@ -2100,6 +2174,7 @@ function reconstruct(cfg, pickRows) {
     },
 
     updatePick(pickId, changes) {
+      if (refuse('edit a pick')) return null;
       const pick = state.picks.find((p) => p.id === pickId);
       if (!pick) return null;
       Object.assign(pick, changes, {
@@ -2110,6 +2185,7 @@ function reconstruct(cfg, pickRows) {
     },
 
     removePick(pickId) {
+      if (refuse('delete a pick')) return null;
       const index = state.picks.findIndex((p) => p.id === pickId);
       if (index === -1) return null;
       const [removed] = state.picks.splice(index, 1);
@@ -2118,6 +2194,7 @@ function reconstruct(cfg, pickRows) {
     },
 
     undoLast() {
+      if (refuse('undo')) return null;
       if (!state.picks.length) return null;
       const removed = state.picks.pop();
       touch('pick:undo');
@@ -2125,11 +2202,13 @@ function reconstruct(cfg, pickRows) {
     },
 
     updateSettings(changes) {
+      if (refuse('change settings')) return null;
       Object.assign(state.settings, changes);
       touch('settings');
     },
 
     updateTeams(teams) {
+      if (refuse('change teams')) return null;
       state.teams = teams;
       touch('teams');
     },
@@ -2399,14 +2478,48 @@ function reconstruct(cfg, pickRows) {
   // Slot classification stays overridable: which spot a player fills is a
   // judgment call (FLEX especially), not a money rule.
 
+  /**
+   * A team's budget/slot position with one pick discounted, so an edit is
+   * judged against what the team would look like without the pick being
+   * changed rather than with it counted twice.
+   */
+  function summaryExcluding(teamId, ignorePickId) {
+    const summary = store.teamSummary(teamId);
+    if (!ignorePickId) return summary;
+
+    const pick = store.get().picks.find((p) => p.id === ignorePickId);
+    if (!pick || pick.teamId !== teamId) return summary;
+
+    const spent = summary.spent - (Number(pick.price) || 0);
+    const filled = summary.filled - 1;
+    const open = store.totalSlots() - filled;
+    const reserve = store.minBid();
+    return {
+      ...summary,
+      spent,
+      filled,
+      open,
+      remaining: summary.budget - spent,
+      maxBid: open <= 0 ? 0 : Math.max(0, summary.budget - spent - (open - 1) * reserve),
+    };
+  }
+
   App.validation = {
     /**
      * @returns {{blockers: Array, warnings: Array, slotOptions: Array, canOverride: boolean}}
      */
-    check({ teamId, playerId, playerName, position, price, slot }) {
+    /**
+     * @param ignorePickId - when re-checking an existing pick (an edit), the
+     *   pick being changed must not count against itself: it would flag its own
+     *   player as a duplicate and its own price against the team's budget.
+     */
+    check({ teamId, playerId, playerName, position, price, slot, ignorePickId }) {
       const blockers = [];
       const warnings = [];
       const state = store.get();
+      const others = ignorePickId
+        ? state.picks.filter((p) => p.id !== ignorePickId)
+        : state.picks;
 
       if (!teamId) blockers.push({ code: 'no_team', message: 'Pick a team.', overridable: false });
       if (!playerName) {
@@ -2427,7 +2540,7 @@ function reconstruct(cfg, pickRows) {
 
       // Duplicate player: hard block, never overridable.
       if (playerId) {
-        const existing = state.picks.find((p) => p.playerId === playerId);
+        const existing = others.find((p) => p.playerId === playerId);
         if (existing) {
           const owner = store.teamById(existing.teamId);
           blockers.push({
@@ -2437,7 +2550,7 @@ function reconstruct(cfg, pickRows) {
           });
         }
       } else if (playerName) {
-        const existing = state.picks.find(
+        const existing = others.find(
           (p) => p.playerName.toLowerCase() === playerName.toLowerCase()
         );
         if (existing) {
@@ -2452,7 +2565,7 @@ function reconstruct(cfg, pickRows) {
 
       let slotOptions = [];
       if (teamId) {
-        const summary = store.teamSummary(teamId);
+        const summary = summaryExcluding(teamId, ignorePickId);
         const team = store.teamById(teamId);
 
         if (summary.open === 0) {
@@ -2475,7 +2588,7 @@ function reconstruct(cfg, pickRows) {
         }
 
         if (position) {
-          slotOptions = store.eligibleOpenSlots(teamId, position);
+          slotOptions = store.eligibleOpenSlots(teamId, position, ignorePickId);
           if (!slotOptions.length && summary.open > 0) {
             blockers.push({
               code: 'slot_full',
@@ -2483,7 +2596,7 @@ function reconstruct(cfg, pickRows) {
               overridable: true,
             });
             // Offer any open slot when overriding -- FLEX eligibility is fuzzy.
-            slotOptions = store.openSlotCodes(teamId);
+            slotOptions = store.openSlotCodes(teamId, ignorePickId);
           }
         }
 
@@ -2974,6 +3087,11 @@ function reconstruct(cfg, pickRows) {
   // authoritative in normal operation; the sheet only wins when local is gone
   // or clearly behind, and the operator is always the one who decides.
 
+  /** The sheet's revision, which travels inside the state it returned. */
+  function remoteRevisionOf(remote) {
+    return Number(remote && remote.state && remote.state.revision) || 0;
+  }
+
   App.restore = {
     /** Draft saved in this browser, if any. */
     local() {
@@ -2988,7 +3106,15 @@ function reconstruct(cfg, pickRows) {
 
     /**
      * Compares the local draft against the sheet's copy of that same draft.
-     * @returns {'local-only'|'remote-only'|'match'|'local-ahead'|'remote-ahead'|'no-remote'}
+     *
+     * The revision lives on the state the sheet gave back, not on the envelope
+     * around it -- reading it off the envelope silently made every comparison
+     * `undefined`, so this reported "match" no matter how far apart the two
+     * were. That is the one answer an operator must be able to trust, so pick
+     * count is checked too: equal revisions with different picks is a real
+     * divergence, not a match.
+     *
+     * @returns {'local-only'|'remote-only'|'match'|'local-ahead'|'remote-ahead'|'diverged'|'no-remote'}
      */
     async compare(localState) {
       let remote;
@@ -3002,15 +3128,22 @@ function reconstruct(cfg, pickRows) {
         return { verdict: localState ? 'local-only' : 'remote-only', remote: null, drafts: remote.drafts };
       }
       if (!localState) return { verdict: 'remote-only', remote };
-      if (localState.revision > remote.revision) return { verdict: 'local-ahead', remote };
-      if (localState.revision < remote.revision) return { verdict: 'remote-ahead', remote };
+
+      const localRev = Number(localState.revision) || 0;
+      const remoteRev = Number(remoteRevisionOf(remote)) || 0;
+      if (localRev > remoteRev) return { verdict: 'local-ahead', remote };
+      if (localRev < remoteRev) return { verdict: 'remote-ahead', remote };
+
+      const localPicks = (localState.picks || []).length;
+      const remotePicks = ((remote.state && remote.state.picks) || []).length;
+      if (localPicks !== remotePicks) return { verdict: 'diverged', remote };
       return { verdict: 'match', remote };
     },
 
     /** Adopts the sheet's copy, bumping past its revision so the next sync sticks. */
     adoptRemote(remote) {
       const next = remote.state;
-      next.revision = Math.max(Number(remote.revision) || 0, Number(next.revision) || 0) + 1;
+      next.revision = Math.max(remoteRevisionOf(remote), Number(next.revision) || 0) + 1;
       store.load(next, 'restore');
       persistence.save(store.get());
       return next;
@@ -3313,9 +3446,11 @@ function reconstruct(cfg, pickRows) {
         value: '200',
         id: 'budget',
       });
+      // Sleeper's floor is $1. Zero would let $0 picks through validation and
+      // produce a draft that cannot be entered into Sleeper afterward.
       const reserveInput = el('input', {
         type: 'number',
-        min: '0',
+        min: '1',
         value: '1',
         id: 'reserve',
       });
@@ -3647,7 +3782,7 @@ function reconstruct(cfg, pickRows) {
                   name: nameInput.value,
                   settings: {
                     budgetPerTeam: Number(budgetInput.value) || 200,
-                    minBid: Number(reserveInput.value) || 0,
+                    minBid: Math.max(1, Number(reserveInput.value) || 1),
                     rosterSlots: slots.filter((s) => s.count > 0),
                     nominationStyle: styleSelect.value,
                     sleeperLeagueId: leagueInput.value.trim() || null,
@@ -4175,12 +4310,36 @@ function reconstruct(cfg, pickRows) {
     );
     const priceInput = el('input', { type: 'number', min: '0', value: String(pick.price), class: 'mini' });
 
+    // An edit goes through the same guardrails as a new pick. Without this it
+    // was possible to edit a pick into a duplicate player, a full roster, or a
+    // price above the team's legal max -- producing a draft that could not be
+    // entered into Sleeper afterward, which is the one thing these rules exist
+    // to guarantee.
     const save = () => {
-      store.updatePick(pick.id, {
+      const changes = {
         playerName: nameInput.value.trim() || pick.playerName,
         teamId: teamSelect.value,
         price: Number(priceInput.value) || 0,
+      };
+      const result = App.validation.check({
+        ...changes,
+        playerId: pick.playerId,
+        position: pick.position,
+        slot: pick.slot,
+        ignorePickId: pick.id,
       });
+
+      const hard = result.blockers.filter((b) => !b.overridable);
+      if (hard.length) {
+        window.alert(`${hard.map((b) => `• ${b.message}`).join('\n')}\n\nThe edit was not saved.`);
+        return;
+      }
+      if (result.blockers.length) {
+        const lines = result.blockers.map((b) => `• ${b.message}`).join('\n');
+        if (!window.confirm(`${lines}\n\nSave this edit anyway?`)) return;
+      }
+
+      store.updatePick(pick.id, changes);
       editingId = null;
       rerender();
     };
@@ -4414,6 +4573,10 @@ function reconstruct(cfg, pickRows) {
               match: 'The sheet matches this computer.',
               'local-ahead': 'This computer is ahead — use “Save to sheet now”.',
               'remote-ahead': `The sheet has a newer copy (${remote?.state.picks.length} picks).`,
+              diverged:
+                `The sheet disagrees with this screen (${remote?.state.picks.length} picks there, ` +
+                `${store.get().picks.length} here). This computer's copy is the one you have been ` +
+                'watching — use “Save to sheet now” unless you know otherwise.',
               'local-only': 'This draft is not in the sheet yet.',
               'remote-only': `The sheet has a draft with ${remote?.state.picks.length} picks.`,
               'no-remote': 'Could not reach the sheet. Your picks are still safe here.',
@@ -4608,6 +4771,7 @@ function reconstruct(cfg, pickRows) {
     // A second tab on a full-snapshot sync model is a genuine data-loss path.
     if (!persistence.claimSession()) {
       readOnly = true;
+      store.setReadOnly(true);
       banner(
         'This draft is already open in another window. Enter picks there, or take over here.',
         'warn',
@@ -4617,6 +4781,7 @@ function reconstruct(cfg, pickRows) {
             run: () => {
               persistence.takeoverSession();
               readOnly = false;
+              store.setReadOnly(false);
               window.location.reload();
             },
           },
@@ -4649,6 +4814,26 @@ function reconstruct(cfg, pickRows) {
         ]
       );
       node.id = 'sync-conflict-banner';
+    });
+
+    // A blocked write has to be visible. Silently dropping a pick in a mirror
+    // window is exactly the failure the lock exists to prevent.
+    App.bus.on('state:readonly-blocked', ({ action }) => {
+      banner(
+        `This window is a read-only mirror, so it can't ${action}. ` +
+          'Use the window where the draft is already open, or take over here.',
+        'warn',
+        [
+          {
+            label: 'Take over',
+            run: () => {
+              persistence.takeoverSession();
+              store.setReadOnly(false);
+              window.location.reload();
+            },
+          },
+        ]
+      );
     });
 
     App.bus.on('storage:failed', () => {
