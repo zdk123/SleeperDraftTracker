@@ -106,7 +106,24 @@ function check(name, condition, detail) {
   }
 }
 
+/**
+ * Fail loudly if nobody is serving the app. Without this the first evaluate()
+ * dies on `window.DraftApp` being undefined, which reads like an app bug.
+ */
+async function assertServerUp() {
+  try {
+    const res = await fetch(URL_BASE, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    throw new Error(
+      `Nothing is serving ${URL_BASE} (${err.message}).\n` +
+        `       Start it first:  node server.js`
+    );
+  }
+}
+
 async function main() {
+  await assertServerUp();
   const profile = await mkdtemp(join(tmpdir(), 'draft-chrome-'));
   const debugPort = 9333;
   const chrome = spawn(

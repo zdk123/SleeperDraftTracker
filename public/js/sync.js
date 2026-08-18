@@ -32,17 +32,16 @@
   let lastAttemptAt = 0;
   let token = '';
   let enabled = true;
+  let backendId = App.backends.defaultId();
+
+  function backend() {
+    return App.backends.get(backendId);
+  }
 
   function setStatus(next, message) {
     status = next;
     detail = message || '';
     bus.emit('sync:status', Sync.snapshot());
-  }
-
-  function headers() {
-    const h = { 'Content-Type': 'application/json' };
-    if (token) h['X-Draft-Token'] = token;
-    return h;
   }
 
   async function push({ force = false, summary = '' } = {}) {
@@ -73,22 +72,16 @@
 
     const state = store.get();
     try {
-      const res = await fetch('api/sync', {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({
-          state,
-          force,
-          summary,
-          client: persistence.sessionId,
-        }),
+      const { status: code, data } = await backend().push(state, {
+        force,
+        summary,
+        client: persistence.sessionId,
       });
-      const data = await res.json().catch(() => ({}));
 
       // A conflict is never retried automatically -- resolving it means
       // choosing which draft the spreadsheet should hold, which is the
       // operator's call, not ours.
-      if (res.status === 409) {
+      if (code === 409) {
         lastServerRevision = data.serverRevision || 0;
         const differentDraft = data.error?.code === 'different_draft';
         setStatus(
@@ -101,8 +94,8 @@
         return;
       }
 
-      if (!res.ok || !data.ok) {
-        throw Object.assign(new Error(data.error?.message || `HTTP ${res.status}`), {
+      if (code >= 400 || !data.ok) {
+        throw Object.assign(new Error(data.error?.message || `HTTP ${code}`), {
           code: data.error?.code,
           hint: data.error?.hint,
         });
@@ -142,8 +135,8 @@
   });
 
   const Sync = {
-    init({ token: t } = {}) {
-      token = t || '';
+    init({ token: t, backend: id, appsScriptUrl } = {}) {
+      Sync.configure({ token: t, backend: id, appsScriptUrl });
       window.addEventListener('online', () => {
         if (dirty) push({ summary: 'back online' });
       });
@@ -155,7 +148,22 @@
     },
 
     setToken(t) {
-      token = t || '';
+      Sync.configure({ token: t });
+    },
+
+    /** Point the sync engine at a backend. Safe to call repeatedly. */
+    configure({ token: t, backend: id, appsScriptUrl } = {}) {
+      if (t !== undefined) token = t || '';
+      if (id) backendId = App.backends.all[id] ? id : backendId;
+      if (appsScriptUrl !== undefined) App.backends.all.appsScript.setUrl(appsScriptUrl);
+      for (const b of Object.values(App.backends.all)) b.setToken(token);
+      // A backend that was switched away from an unconfigured one deserves
+      // another chance rather than staying permanently disabled.
+      if (!enabled && status === 'disabled') enabled = true;
+    },
+
+    backendId() {
+      return backendId;
     },
 
     setEnabled(value) {
@@ -183,22 +191,22 @@
 
     /** Without a key: the list of drafts. With one: that draft's full state. */
     async fetchRemote(draftKey) {
-      const url = draftKey ? `api/state?draft=${encodeURIComponent(draftKey)}` : 'api/state';
-      const res = await fetch(url, { headers: headers() });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        throw new Error(data.error?.message || `HTTP ${res.status}`);
+      const { status: code, data } = draftKey
+        ? await backend().load(draftKey)
+        : await backend().list();
+      if (code >= 400 || !data.ok) {
+        throw new Error(data.error?.message || `HTTP ${code}`);
       }
       return data;
     },
 
     async health() {
-      const res = await fetch('api/health', { headers: headers() });
-      return res.json();
+      const { data } = await backend().health();
+      return data;
     },
 
     snapshot() {
-      return { status, detail, lastSyncedAt, lastServerRevision, dirty, enabled };
+      return { status, detail, lastSyncedAt, lastServerRevision, dirty, enabled, backend: backendId };
     },
   };
 

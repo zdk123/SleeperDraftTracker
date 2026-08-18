@@ -1250,6 +1250,609 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
 
 </script>
     <script>
+// GENERATED FILE -- do not edit.
+// Built from api/_lib/schema.js by scripts/build-schema-browser.mjs.
+// Edit the source and re-run that script; scripts/test.mjs enforces it.
+
+(function (App) {
+  'use strict';
+
+// Shared definition of how draft state maps onto the spreadsheet. Both
+// api/sync.js (state -> rows) and api/state.js (rows -> state) use this, so the
+// two directions can't drift apart.
+
+// Each draft gets its own set of tabs, named after its key. Two drafts in one
+// spreadsheet therefore cannot touch each other's data at all -- the isolation
+// is structural rather than a guard that has to hold.
+const TAB_KINDS = {
+  ROSTERS: 'Rosters',
+  PICKS: 'Picks',
+  BUDGETS: 'Budgets',
+  CONFIG: 'Config',
+  LOG: 'Log',
+  BACKUP: 'Backup',
+};
+
+/** One shared tab listing every draft in the spreadsheet. */
+const INDEX_TAB = 'Drafts';
+
+const INDEX_HEADERS = [
+  'Draft',
+  'Name',
+  'Started',
+  'Last saved',
+  'Picks',
+  'Spent',
+  'Teams',
+  'Status',
+  'Draft ID',
+];
+
+/** Tab name for one kind of data belonging to one draft. */
+function tabName(draftKey, kind) {
+  return `${draftKey} ${kind}`;
+}
+
+function tabsFor(draftKey) {
+  return Object.values(TAB_KINDS).map((kind) => tabName(draftKey, kind));
+}
+
+/**
+ * A1 ranges must quote tab names containing spaces, which every draft tab has.
+ * Apostrophes inside a name are escaped by doubling them.
+ */
+function quoteTab(name) {
+  return `'${String(name).replace(/'/g, "''")}'`;
+}
+
+function range(draftKey, kind, span) {
+  return `${quoteTab(tabName(draftKey, kind))}!${span}`;
+}
+
+// Every rewrite clears a fixed range, so a shrinking pick count (after a
+// delete) can't leave stale trailing rows behind in the derived tabs. These
+// are generous upper bounds, not expectations.
+const MAX_PICK_ROWS = 500;
+const MAX_ROSTER_ROWS = 80;
+const MAX_TEAM_ROWS = 40;
+const MAX_CONFIG_ROWS = 120;
+const MAX_BACKUP_ROWS = 40;
+const MAX_TEAM_COLS = 24;
+
+const BACKUP_CHUNK_CHARS = 40000; // Sheets caps a cell at ~50k characters.
+
+const PICK_HEADERS = [
+  'Pick #',
+  'Timestamp',
+  'Player',
+  'Pos',
+  'NFL Team',
+  'Sleeper Player ID',
+  'Fantasy Team',
+  'Manager',
+  'Price',
+  'Slot',
+  'Overridden?',
+  'Notes',
+];
+
+const BUDGET_HEADERS = [
+  'Fantasy Team',
+  'Manager',
+  'Budget',
+  'Spent',
+  'Remaining',
+  'Slots Filled',
+  'Slots Open',
+  'Max Bid',
+];
+
+const LOG_HEADERS = [
+  'Timestamp',
+  'Revision',
+  'Client',
+  'Op Summary',
+  'Pick Count',
+  'Total Spent',
+  'Detail (JSON)',
+];
+
+const DEFAULT_ROSTER_SLOTS = [
+  { slotKey: 'QB', label: 'QB', count: 1, eligiblePositions: ['QB'] },
+  { slotKey: 'RB', label: 'RB', count: 2, eligiblePositions: ['RB'] },
+  { slotKey: 'WR', label: 'WR', count: 2, eligiblePositions: ['WR'] },
+  { slotKey: 'TE', label: 'TE', count: 1, eligiblePositions: ['TE'] },
+  { slotKey: 'FLEX', label: 'FLEX', count: 1, eligiblePositions: ['RB', 'WR', 'TE'] },
+  { slotKey: 'DEF', label: 'DEF', count: 1, eligiblePositions: ['DEF'] },
+  { slotKey: 'K', label: 'K', count: 1, eligiblePositions: ['K'] },
+  { slotKey: 'BENCH', label: 'BN', count: 6, eligiblePositions: ['QB', 'RB', 'WR', 'TE', 'DEF', 'K'] },
+];
+
+const DEFAULT_SETTINGS = {
+  budgetPerTeam: 200,
+  // Sleeper's rule: minimum bid is $1, and a team must hold that much back for
+  // every roster spot it still has to fill. One number drives both.
+  minBid: 1,
+  rosterSlots: DEFAULT_ROSTER_SLOTS,
+  nominationStyle: 'rotating',
+  sleeperLeagueId: null,
+};
+
+/** Tolerates state written before the setting was renamed. */
+function minBidOf(settings) {
+  return Number(settings?.minBid ?? settings?.minReservePerOpenSlot ?? 1) || 0;
+}
+
+/** Expands `{slotKey:'RB', count:2}` into the concrete codes RB1, RB2. */
+function expandSlots(rosterSlots) {
+  const out = [];
+  for (const slot of rosterSlots || []) {
+    const count = Math.max(0, Number(slot.count) || 0);
+    for (let i = 1; i <= count; i += 1) {
+      out.push({
+        code: count === 1 ? slot.slotKey : `${slot.slotKey}${i}`,
+        label: count === 1 ? slot.label : `${slot.label}${i}`,
+        slotKey: slot.slotKey,
+        eligiblePositions: slot.eligiblePositions || [],
+      });
+    }
+  }
+  return out;
+}
+
+function totalSlotCount(rosterSlots) {
+  return (rosterSlots || []).reduce((sum, s) => sum + (Number(s.count) || 0), 0);
+}
+
+/** Per-team spend/remaining/max-bid. The one place this arithmetic lives. */
+function teamSummary(state, teamId) {
+  const settings = state.settings || DEFAULT_SETTINGS;
+  const budget = Number(settings.budgetPerTeam) || 0;
+  const reserve = minBidOf(settings);
+  const slotTotal = totalSlotCount(settings.rosterSlots);
+  const picks = (state.picks || []).filter((p) => p.teamId === teamId);
+  const spent = picks.reduce((sum, p) => sum + (Number(p.price) || 0), 0);
+  const remaining = budget - spent;
+  const filled = picks.length;
+  const open = Math.max(0, slotTotal - filled);
+  // Keep enough back to put the reserve on every slot still to fill after this one.
+  const maxBid = open === 0 ? 0 : Math.max(0, remaining - (open - 1) * reserve);
+  return { budget, spent, remaining, filled, open, maxBid };
+}
+
+function pad(rows, maxRows, width) {
+  const out = rows.slice(0, maxRows);
+  const blank = new Array(width).fill('');
+  while (out.length < maxRows) out.push(blank.slice());
+  return out.map((row) => {
+    const r = row.slice(0, width);
+    while (r.length < width) r.push('');
+    return r;
+  });
+}
+
+function colLetter(index) {
+  let n = index + 1;
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+function picksRows(state) {
+  const teamsById = new Map((state.teams || []).map((t) => [t.id, t]));
+  const rows = [PICK_HEADERS];
+  (state.picks || []).forEach((pick, i) => {
+    const team = teamsById.get(pick.teamId) || {};
+    const overridden = [
+      pick.overrides?.budget ? 'budget' : null,
+      pick.overrides?.slot ? 'slot' : null,
+    ]
+      .filter(Boolean)
+      .join('+');
+    rows.push([
+      i + 1,
+      pick.timestamp || '',
+      pick.playerName || '',
+      pick.position || '',
+      pick.nflTeam || '',
+      pick.playerId || '',
+      team.name || '',
+      team.manager || '',
+      Number(pick.price) || 0,
+      pick.slot || '',
+      overridden,
+      pick.note || '',
+    ]);
+  });
+  return pad(rows, MAX_PICK_ROWS, PICK_HEADERS.length);
+}
+
+function budgetsRows(state) {
+  const rows = [BUDGET_HEADERS];
+  for (const team of state.teams || []) {
+    const s = teamSummary(state, team.id);
+    rows.push([
+      team.name || '',
+      team.manager || '',
+      s.budget,
+      s.spent,
+      s.remaining,
+      s.filled,
+      s.open,
+      // Written as a static value, not a formula: full-range rewrites clobber formulas.
+      s.maxBid,
+    ]);
+  }
+  return pad(rows, MAX_TEAM_ROWS, BUDGET_HEADERS.length);
+}
+
+/**
+ * The tab the commissioner actually reads from when re-entering results into
+ * Sleeper afterward: one (player, $) column pair per team, rows = roster slots.
+ */
+function rostersRows(state) {
+  const teams = state.teams || [];
+  const slots = expandSlots((state.settings || DEFAULT_SETTINGS).rosterSlots);
+  const width = 1 + teams.length * 2;
+
+  const header = ['Slot'];
+  for (const team of teams) header.push(team.name || '', '$');
+  const rows = [header];
+
+  const bySlot = new Map();
+  for (const pick of state.picks || []) {
+    bySlot.set(`${pick.teamId}::${pick.slot}`, pick);
+  }
+
+  for (const slot of slots) {
+    const row = [slot.label];
+    for (const team of teams) {
+      const pick = bySlot.get(`${team.id}::${slot.code}`);
+      row.push(pick ? pick.playerName : '', pick ? Number(pick.price) || 0 : '');
+    }
+    rows.push(row);
+  }
+
+  const totals = ['TOTAL'];
+  for (const team of teams) {
+    const s = teamSummary(state, team.id);
+    totals.push('', s.spent);
+  }
+  rows.push(totals);
+
+  return pad(rows, MAX_ROSTER_ROWS, Math.max(width, 1 + MAX_TEAM_COLS * 2));
+}
+
+function configRows(state) {
+  const settings = state.settings || DEFAULT_SETTINGS;
+  const rows = [
+    ['Key', 'Value'],
+    ['draftId', state.draftId || ''],
+    ['draftKey', state.draftKey || ''],
+    ['name', state.name || ''],
+    ['revision', Number(state.revision) || 0],
+    ['updatedAt', state.updatedAt || ''],
+    ['status', state.status || ''],
+    ['budgetPerTeam', Number(settings.budgetPerTeam) || 0],
+    ['minBid', minBidOf(settings)],
+    ['nominationStyle', settings.nominationStyle || 'rotating'],
+    ['nominationOrder', (state.nominationOrder || []).join('|')],
+    ['sleeperLeagueId', settings.sleeperLeagueId || ''],
+    ['appVersion', state.appVersion || ''],
+    [],
+    ['Teams'],
+    ['team_id', 'name', 'manager', 'sleeper_user_id'],
+  ];
+  for (const team of state.teams || []) {
+    rows.push([team.id, team.name || '', team.manager || '', team.sleeperUserId || '']);
+  }
+  rows.push([]);
+  rows.push(['RosterSlots']);
+  rows.push(['slot_key', 'label', 'count', 'eligible_positions']);
+  for (const slot of settings.rosterSlots || []) {
+    rows.push([
+      slot.slotKey,
+      slot.label,
+      Number(slot.count) || 0,
+      (slot.eligiblePositions || []).join('|'),
+    ]);
+  }
+  return pad(rows, MAX_CONFIG_ROWS, 4);
+}
+
+function backupRows(state) {
+  const json = JSON.stringify(state);
+  const chunks = [];
+  for (let i = 0; i < json.length; i += BACKUP_CHUNK_CHARS) {
+    chunks.push([chunks.length, json.slice(i, i + BACKUP_CHUNK_CHARS)]);
+  }
+  const rows = [['chunk', 'json'], ...chunks];
+  return pad(rows, MAX_BACKUP_ROWS, 2);
+}
+
+/** The single batchUpdate payload rewriting every derived tab for one draft. */
+function stateToRanges(state) {
+  const key = draftKeyOf(state);
+  const rosterWidth = 1 + MAX_TEAM_COLS * 2;
+  return [
+    {
+      range: range(key, TAB_KINDS.CONFIG, `A1:${colLetter(3)}${MAX_CONFIG_ROWS}`),
+      values: configRows(state),
+    },
+    {
+      range: range(key, TAB_KINDS.PICKS, `A1:${colLetter(PICK_HEADERS.length - 1)}${MAX_PICK_ROWS}`),
+      values: picksRows(state),
+    },
+    {
+      range: range(key, TAB_KINDS.ROSTERS, `A1:${colLetter(rosterWidth - 1)}${MAX_ROSTER_ROWS}`),
+      values: rostersRows(state),
+    },
+    {
+      range: range(key, TAB_KINDS.BUDGETS, `A1:${colLetter(BUDGET_HEADERS.length - 1)}${MAX_TEAM_ROWS}`),
+      values: budgetsRows(state),
+    },
+    {
+      range: range(key, TAB_KINDS.BACKUP, `A1:B${MAX_BACKUP_ROWS}`),
+      values: backupRows(state),
+    },
+  ];
+}
+
+/**
+ * Falls back to the draft id for state written before keys existed, so an old
+ * saved draft still syncs somewhere sensible instead of failing.
+ */
+function draftKeyOf(state) {
+  return state.draftKey || state.draftId || 'draft';
+}
+
+/** One row describing this draft for the shared index tab. */
+function indexRow(state) {
+  const spent = (state.picks || []).reduce((sum, p) => sum + (Number(p.price) || 0), 0);
+  return [
+    draftKeyOf(state),
+    state.name || '',
+    (state.createdAt || '').slice(0, 16).replace('T', ' '),
+    (state.updatedAt || '').slice(0, 16).replace('T', ' '),
+    (state.picks || []).length,
+    spent,
+    (state.teams || []).length,
+    state.status || '',
+    state.draftId || '',
+  ];
+}
+
+const INDEX_RANGE = `${quoteTab(INDEX_TAB)}!A1:I200`;
+
+/** Parses the index into a list of drafts, newest activity first. */
+function parseIndex(rows) {
+  return (rows || [])
+    .slice(1)
+    .filter((r) => r && r[0])
+    .map((r) => ({
+      draftKey: r[0],
+      name: r[1] || '',
+      created: r[2] || '',
+      updated: r[3] || '',
+      picks: Number(r[4]) || 0,
+      spent: Number(r[5]) || 0,
+      teams: Number(r[6]) || 0,
+      status: r[7] || '',
+      draftId: r[8] || '',
+    }))
+    .sort((a, b) => String(b.updated).localeCompare(String(a.updated)));
+}
+
+/** Rewrites the index with this draft's row inserted or updated in place. */
+function indexRowsWith(existingRows, state) {
+  const key = draftKeyOf(state);
+  const kept = (existingRows || [])
+    .slice(1)
+    .filter((r) => r && r[0] && r[0] !== key);
+  const rows = [INDEX_HEADERS, ...kept, indexRow(state)];
+  // Blank out any rows the list shrank past.
+  const total = Math.max(rows.length, (existingRows || []).length);
+  while (rows.length < total) rows.push(new Array(INDEX_HEADERS.length).fill(''));
+  return rows.map((r) => {
+    const row = r.slice(0, INDEX_HEADERS.length);
+    while (row.length < INDEX_HEADERS.length) row.push('');
+    return row;
+  });
+}
+
+function logRow(state, { client = '', summary = '' } = {}) {
+  const spent = (state.picks || []).reduce((sum, p) => sum + (Number(p.price) || 0), 0);
+  return [
+    new Date().toISOString(),
+    Number(state.revision) || 0,
+    client,
+    summary,
+    (state.picks || []).length,
+    spent,
+    JSON.stringify({ draftId: state.draftId, status: state.status }),
+  ];
+}
+
+function logAppendRange(draftKey) {
+  return range(draftKey, TAB_KINDS.LOG, 'A1');
+}
+
+function configReadRange(draftKey) {
+  return range(draftKey, TAB_KINDS.CONFIG, `A1:D${MAX_CONFIG_ROWS}`);
+}
+
+function picksReadRange(draftKey) {
+  return range(draftKey, TAB_KINDS.PICKS, `A1:L${MAX_PICK_ROWS}`);
+}
+
+function backupReadRange(draftKey) {
+  return range(draftKey, TAB_KINDS.BACKUP, `A1:B${MAX_BACKUP_ROWS}`);
+}
+
+/** Reads just the identity and revision used for the stale-write guard. */
+function parseConfigHead(rows) {
+  const out = { draftId: '', draftKey: '', name: '', revision: 0, updatedAt: '' };
+  for (const row of rows || []) {
+    const key = row[0];
+    if (key === 'draftId') out.draftId = row[1] || '';
+    else if (key === 'draftKey') out.draftKey = row[1] || '';
+    else if (key === 'name') out.name = row[1] || '';
+    else if (key === 'revision') out.revision = Number(row[1]) || 0;
+    else if (key === 'updatedAt') out.updatedAt = row[1] || '';
+    else if (key === 'Teams') break;
+  }
+  return out;
+}
+
+/**
+ * Rebuilds state from the sheet. Prefers the _Backup JSON (exact) and falls
+ * back to reconstructing from Config/Picks if that tab is empty or corrupt.
+ */
+function rowsToState({ configRows: cfg, pickRows, backupRows: backup }) {
+  const fromBackup = parseBackup(backup);
+  if (fromBackup) return fromBackup;
+  return reconstruct(cfg, pickRows);
+}
+
+function parseBackup(rows) {
+  const chunks = (rows || [])
+    .slice(1)
+    .filter((r) => r && r[1])
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .map((r) => r[1]);
+  if (!chunks.length) return null;
+  try {
+    const parsed = JSON.parse(chunks.join(''));
+    return parsed && typeof parsed === 'object' && Array.isArray(parsed.picks) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function reconstruct(cfg, pickRows) {
+  const rows = cfg || [];
+  const state = {
+    version: 1,
+    draftId: '',
+    draftKey: '',
+    name: '',
+    revision: 0,
+    updatedAt: '',
+    status: 'drafting',
+    settings: { ...DEFAULT_SETTINGS, rosterSlots: [] },
+    nominationOrder: [],
+    teams: [],
+    picks: [],
+  };
+
+  let section = 'kv';
+  for (const row of rows) {
+    const first = (row[0] || '').toString();
+    if (first === 'Teams') {
+      section = 'teams';
+      continue;
+    }
+    if (first === 'RosterSlots') {
+      section = 'slots';
+      continue;
+    }
+    if (!first) continue;
+
+    if (section === 'kv') {
+      const value = row[1];
+      if (first === 'draftId') state.draftId = value || '';
+      else if (first === 'draftKey') state.draftKey = value || '';
+      else if (first === 'name') state.name = value || '';
+      else if (first === 'revision') state.revision = Number(value) || 0;
+      else if (first === 'updatedAt') state.updatedAt = value || '';
+      else if (first === 'status') state.status = value || 'drafting';
+      else if (first === 'budgetPerTeam') state.settings.budgetPerTeam = Number(value) || 0;
+      else if (first === 'minBid' || first === 'minReservePerOpenSlot')
+        state.settings.minBid = Number(value) || 0;
+      else if (first === 'nominationStyle') state.settings.nominationStyle = value || 'rotating';
+      else if (first === 'nominationOrder')
+        state.nominationOrder = (value || '').split('|').filter(Boolean);
+      else if (first === 'sleeperLeagueId') state.settings.sleeperLeagueId = value || null;
+    } else if (section === 'teams') {
+      if (first === 'team_id') continue;
+      state.teams.push({
+        id: first,
+        name: row[1] || '',
+        manager: row[2] || '',
+        sleeperUserId: row[3] || '',
+      });
+    } else if (section === 'slots') {
+      if (first === 'slot_key') continue;
+      state.settings.rosterSlots.push({
+        slotKey: first,
+        label: row[1] || first,
+        count: Number(row[2]) || 0,
+        eligiblePositions: (row[3] || '').split('|').filter(Boolean),
+      });
+    }
+  }
+
+  if (!state.settings.rosterSlots.length) state.settings.rosterSlots = DEFAULT_ROSTER_SLOTS;
+  if (!state.nominationOrder.length) state.nominationOrder = state.teams.map((t) => t.id);
+
+  const teamsByName = new Map(state.teams.map((t) => [t.name, t.id]));
+  for (const row of (pickRows || []).slice(1)) {
+    if (!row || !row[2]) continue;
+    const overridden = (row[10] || '').toString();
+    state.picks.push({
+      id: `p${row[0] || state.picks.length + 1}`,
+      playerName: row[2],
+      position: row[3] || '',
+      nflTeam: row[4] || '',
+      playerId: row[5] || '',
+      teamId: teamsByName.get(row[6]) || '',
+      price: Number(row[8]) || 0,
+      slot: row[9] || '',
+      timestamp: row[1] || '',
+      overrides: { budget: overridden.includes('budget'), slot: overridden.includes('slot') },
+      note: row[11] || '',
+    });
+  }
+
+  return state;
+}
+
+  App.schema = {
+    TAB_KINDS,
+    INDEX_TAB,
+    INDEX_HEADERS,
+    tabName,
+    tabsFor,
+    quoteTab,
+    LOG_HEADERS,
+    DEFAULT_ROSTER_SLOTS,
+    DEFAULT_SETTINGS,
+    minBidOf,
+    expandSlots,
+    totalSlotCount,
+    teamSummary,
+    stateToRanges,
+    draftKeyOf,
+    indexRow,
+    INDEX_RANGE,
+    parseIndex,
+    indexRowsWith,
+    logRow,
+    logAppendRange,
+    configReadRange,
+    picksReadRange,
+    backupReadRange,
+    parseConfigHead,
+    rowsToState,
+  };
+})(window.DraftApp);
+
+</script>
+    <script>
 (function (App) {
   'use strict';
 
@@ -1997,6 +2600,189 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
 (function (App) {
   'use strict';
 
+  // Two ways to get the draft into a Google Sheet. They exist because they fail
+  // in different places, and which one is less trouble depends on the operator:
+  //
+  //   'server'      -- the app's own /api/* endpoints, holding a service-account
+  //                    key server-side. Needs a Google Cloud project to create
+  //                    that key, but once deployed the operator does nothing.
+  //
+  //   'appsScript'  -- a script pasted into the spreadsheet itself and deployed
+  //                    as a web app. No cloud project, no key file; the script
+  //                    runs as whoever deployed it. The browser talks to Google
+  //                    directly, so this is the only backend that works from the
+  //                    standalone DraftBoard-offline.html file, which has no
+  //                    server behind it at all.
+  //
+  // Both take the same calls and return the same shapes, so sync.js does not
+  // know or care which one is in use.
+
+  /** Normalized result: { status, data } -- HTTP-ish, whatever the transport did. */
+  function result(status, data) {
+    return { status, data: data || {} };
+  }
+
+  function serverBackend() {
+    let token = '';
+
+    function headers() {
+      const h = { 'Content-Type': 'application/json' };
+      if (token) h['X-Draft-Token'] = token;
+      return h;
+    }
+
+    async function call(url, options) {
+      const res = await fetch(url, options);
+      const data = await res.json().catch(() => ({}));
+      return result(res.status, data);
+    }
+
+    return {
+      id: 'server',
+      label: 'This app’s server',
+      setToken(t) { token = t || ''; },
+
+      push(state, { force = false, summary = '', client = '' } = {}) {
+        return call('api/sync', {
+          method: 'POST',
+          headers: headers(),
+          body: JSON.stringify({ state, force, summary, client }),
+        });
+      },
+
+      list() {
+        return call('api/state', { headers: headers() });
+      },
+
+      load(draftKey) {
+        return call(`api/state?draft=${encodeURIComponent(draftKey)}`, { headers: headers() });
+      },
+
+      health() {
+        return call('api/health', { headers: headers() });
+      },
+    };
+  }
+
+  function appsScriptBackend() {
+    let token = '';
+    let url = '';
+
+    /**
+     * Content-Type must stay text/plain. Anything else makes this a non-simple
+     * cross-origin request, and the browser sends a CORS preflight that Apps
+     * Script has no way to answer -- the request would fail before Google ever
+     * saw it. The script reads the body as JSON regardless of this header.
+     */
+    async function call(payload) {
+      if (!url) return result(503, { ok: false, error: { code: 'not_configured', message: 'No Apps Script URL set.' } });
+      let res;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({ ...payload, token }),
+          redirect: 'follow',
+        });
+      } catch (err) {
+        // Network failure, or the deployment is not shared with "Anyone".
+        throw Object.assign(new Error(err.message || 'Could not reach the Apps Script URL.'), {
+          code: 'unreachable',
+          hint:
+            'Check the deployment is set to "Anyone" under "Who has access", and that ' +
+            'the URL ends in /exec rather than /dev.',
+        });
+      }
+
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // A login page instead of JSON: the deployment is private.
+        throw Object.assign(new Error('The Apps Script URL returned a page, not data.'), {
+          code: 'not_shared',
+          hint: 'Re-deploy the script with "Who has access" set to "Anyone".',
+        });
+      }
+
+      // Apps Script cannot set a status code, so it reports one in the body.
+      return result(Number(data.status) || (data.ok ? 200 : 500), data);
+    }
+
+    return {
+      id: 'appsScript',
+      label: 'Apps Script in the spreadsheet',
+      setToken(t) { token = t || ''; },
+      setUrl(u) { url = (u || '').trim(); },
+      get url() { return url; },
+
+      /**
+       * Sends finished rows rather than state. The mapping comes from
+       * App.schema, which is generated from the same file the server uses, so
+       * both backends write byte-identical spreadsheets.
+       */
+      push(state, { force = false, summary = '', client = '' } = {}) {
+        return call({
+          op: 'sync',
+          draftKey: App.schema.draftKeyOf(state),
+          draftId: state.draftId,
+          revision: Number(state.revision) || 0,
+          pickCount: (state.picks || []).length,
+          ranges: App.schema.stateToRanges(state),
+          indexRow: App.schema.indexRow(state),
+          logRow: App.schema.logRow(state, { client, summary }),
+          force,
+        });
+      },
+
+      async list() {
+        const res = await call({ op: 'list' });
+        if (res.status !== 200) return res;
+        return result(200, { ok: true, drafts: App.schema.parseIndex(res.data.rows || []) });
+      },
+
+      async load(draftKey) {
+        const res = await call({ op: 'load', draftKey });
+        if (res.status !== 200) return res;
+        // Rebuilt with the same rowsToState() the server uses, so a restore
+        // through either backend produces exactly the same draft.
+        const state = App.schema.rowsToState(res.data);
+        const found = Boolean(state && state.draftId);
+        return result(200, { ok: true, found, state: found ? state : null });
+      },
+
+      health() {
+        return call({ op: 'health' });
+      },
+    };
+  }
+
+  const backends = {
+    server: serverBackend(),
+    appsScript: appsScriptBackend(),
+  };
+
+  App.backends = {
+    all: backends,
+    get(id) {
+      return backends[id] || backends.server;
+    },
+    /**
+     * Opened from a file:// URL there is no server to talk to, so Apps Script
+     * is the only backend that can work.
+     */
+    defaultId() {
+      return window.location.protocol === 'file:' ? 'appsScript' : 'server';
+    },
+  };
+})(window.DraftApp);
+
+</script>
+    <script>
+(function (App) {
+  'use strict';
+
   const { store, persistence, bus } = App;
 
   // Best-effort replication of local state to the spreadsheet. Never on the
@@ -2028,17 +2814,16 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
   let lastAttemptAt = 0;
   let token = '';
   let enabled = true;
+  let backendId = App.backends.defaultId();
+
+  function backend() {
+    return App.backends.get(backendId);
+  }
 
   function setStatus(next, message) {
     status = next;
     detail = message || '';
     bus.emit('sync:status', Sync.snapshot());
-  }
-
-  function headers() {
-    const h = { 'Content-Type': 'application/json' };
-    if (token) h['X-Draft-Token'] = token;
-    return h;
   }
 
   async function push({ force = false, summary = '' } = {}) {
@@ -2069,22 +2854,16 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
 
     const state = store.get();
     try {
-      const res = await fetch('api/sync', {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify({
-          state,
-          force,
-          summary,
-          client: persistence.sessionId,
-        }),
+      const { status: code, data } = await backend().push(state, {
+        force,
+        summary,
+        client: persistence.sessionId,
       });
-      const data = await res.json().catch(() => ({}));
 
       // A conflict is never retried automatically -- resolving it means
       // choosing which draft the spreadsheet should hold, which is the
       // operator's call, not ours.
-      if (res.status === 409) {
+      if (code === 409) {
         lastServerRevision = data.serverRevision || 0;
         const differentDraft = data.error?.code === 'different_draft';
         setStatus(
@@ -2097,8 +2876,8 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
         return;
       }
 
-      if (!res.ok || !data.ok) {
-        throw Object.assign(new Error(data.error?.message || `HTTP ${res.status}`), {
+      if (code >= 400 || !data.ok) {
+        throw Object.assign(new Error(data.error?.message || `HTTP ${code}`), {
           code: data.error?.code,
           hint: data.error?.hint,
         });
@@ -2138,8 +2917,8 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
   });
 
   const Sync = {
-    init({ token: t } = {}) {
-      token = t || '';
+    init({ token: t, backend: id, appsScriptUrl } = {}) {
+      Sync.configure({ token: t, backend: id, appsScriptUrl });
       window.addEventListener('online', () => {
         if (dirty) push({ summary: 'back online' });
       });
@@ -2151,7 +2930,22 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
     },
 
     setToken(t) {
-      token = t || '';
+      Sync.configure({ token: t });
+    },
+
+    /** Point the sync engine at a backend. Safe to call repeatedly. */
+    configure({ token: t, backend: id, appsScriptUrl } = {}) {
+      if (t !== undefined) token = t || '';
+      if (id) backendId = App.backends.all[id] ? id : backendId;
+      if (appsScriptUrl !== undefined) App.backends.all.appsScript.setUrl(appsScriptUrl);
+      for (const b of Object.values(App.backends.all)) b.setToken(token);
+      // A backend that was switched away from an unconfigured one deserves
+      // another chance rather than staying permanently disabled.
+      if (!enabled && status === 'disabled') enabled = true;
+    },
+
+    backendId() {
+      return backendId;
     },
 
     setEnabled(value) {
@@ -2179,22 +2973,22 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
 
     /** Without a key: the list of drafts. With one: that draft's full state. */
     async fetchRemote(draftKey) {
-      const url = draftKey ? `api/state?draft=${encodeURIComponent(draftKey)}` : 'api/state';
-      const res = await fetch(url, { headers: headers() });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok) {
-        throw new Error(data.error?.message || `HTTP ${res.status}`);
+      const { status: code, data } = draftKey
+        ? await backend().load(draftKey)
+        : await backend().list();
+      if (code >= 400 || !data.ok) {
+        throw new Error(data.error?.message || `HTTP ${code}`);
       }
       return data;
     },
 
     async health() {
-      const res = await fetch('api/health', { headers: headers() });
-      return res.json();
+      const { data } = await backend().health();
+      return data;
     },
 
     snapshot() {
-      return { status, detail, lastSyncedAt, lastServerRevision, dirty, enabled };
+      return { status, detail, lastSyncedAt, lastServerRevision, dirty, enabled, backend: backendId };
     },
   };
 
@@ -2606,6 +3400,44 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
         placeholder: 'Leave blank if not using Sheets',
         value: App.persistence.prefs().token || '',
       });
+
+      // Which way this app reaches Google. See public/js/backends.js -- the two
+      // differ only in what the operator has to set up beforehand.
+      const savedBackend = App.persistence.prefs().backend || App.backends.defaultId();
+      const backendSelect = el('select', { id: 'sheet-backend' }, [
+        el('option', { value: 'server', text: 'This app’s server (service account)' }),
+        el('option', { value: 'appsScript', text: 'Script in the spreadsheet (no Google Cloud)' }),
+      ]);
+      backendSelect.value = savedBackend;
+
+      const scriptUrlInput = el('input', {
+        type: 'url',
+        id: 'apps-script-url',
+        placeholder: 'https://script.google.com/macros/s/…/exec',
+        value: App.persistence.prefs().appsScriptUrl || '',
+      });
+      const scriptUrlField = el('div', { class: 'field' }, [
+        el('label', { for: 'apps-script-url', text: 'Web app URL' }),
+        scriptUrlInput,
+        el('p', {
+          class: 'muted small',
+          text: 'From Apps Script → Deploy → New deployment → Web app. It must end in /exec.',
+        }),
+      ]);
+
+      function syncBackendFields() {
+        const usingScript = backendSelect.value === 'appsScript';
+        scriptUrlField.hidden = !usingScript;
+        App.sync.configure({
+          backend: backendSelect.value,
+          appsScriptUrl: scriptUrlInput.value.trim(),
+          token: tokenInput.value.trim(),
+        });
+      }
+      backendSelect.addEventListener('change', syncBackendFields);
+      scriptUrlInput.addEventListener('change', syncBackendFields);
+      tokenInput.addEventListener('change', syncBackendFields);
+      syncBackendFields();
       const usernameInput = el('input', { type: 'text', id: 'sleeper-user', placeholder: 'Sleeper username' });
       const leagueInput = el('input', { type: 'text', id: 'sleeper-league', placeholder: 'or paste a league ID' });
 
@@ -2797,6 +3629,11 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
                 'the draft still works and saves in this browser.',
             }),
             el('div', { class: 'field' }, [
+              el('label', { for: 'sheet-backend', text: 'How it reaches the sheet' }),
+              backendSelect,
+            ]),
+            scriptUrlField,
+            el('div', { class: 'field' }, [
               el('label', { for: 'token', text: 'Access token' }),
               tokenInput,
             ]),
@@ -2808,7 +3645,7 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
                 onclick: async (e) => {
                   e.target.disabled = true;
                   note(healthNote, 'Testing…');
-                  App.sync.setToken(tokenInput.value.trim());
+                  syncBackendFields();
                   try {
                     const health = await App.sync.health();
                     const kind = health.ok ? 'ok' : health.hasCredentials ? 'warn' : 'info';
@@ -2846,7 +3683,13 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
                 }
                 const tokenValue = tokenInput.value.trim();
                 App.persistence.setPref('token', tokenValue);
-                App.sync.setToken(tokenValue);
+                App.persistence.setPref('backend', backendSelect.value);
+                App.persistence.setPref('appsScriptUrl', scriptUrlInput.value.trim());
+                App.sync.configure({
+                  token: tokenValue,
+                  backend: backendSelect.value,
+                  appsScriptUrl: scriptUrlInput.value.trim(),
+                });
                 store.create({
                   teams: named,
                   name: nameInput.value,
@@ -3805,7 +4648,11 @@ window.__PLAYERS__ = {"generatedAt":"2026-08-18T01:18:26.654Z","count":1405,"pla
     };
 
     initTheme();
-    sync.init({ token: persistence.prefs().token || '' });
+    sync.init({
+      token: persistence.prefs().token || '',
+      backend: persistence.prefs().backend || App.backends.defaultId(),
+      appsScriptUrl: persistence.prefs().appsScriptUrl || '',
+    });
 
     // A second tab on a full-snapshot sync model is a genuine data-loss path.
     if (!persistence.claimSession()) {

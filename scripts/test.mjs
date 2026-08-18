@@ -3,7 +3,7 @@
 // draft night: budget guardrails, slot assignment, and the sheet round-trip.
 // Run with: node scripts/test.mjs
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
@@ -21,6 +21,13 @@ import {
   DEFAULT_ROSTER_SLOTS,
   TAB_KINDS,
 } from '../api/_lib/schema.js';
+import { indexRow } from '../api/_lib/schema.js';
+import { parseEnv, loadEnvFile } from '../api/_lib/env.js';
+import {
+  generate,
+  SOURCE as SCHEMA_SOURCE,
+  TARGET as SCHEMA_TARGET,
+} from './build-schema-browser.mjs';
 
 /** Ranges are now quoted per-draft tab names, e.g. `'2026-08-17 x1y2 Picks'!A1:L500`. */
 function rangesByKind(state) {
@@ -107,6 +114,28 @@ function newDraft({ budget = 200, teams = 2, slots, nominationStyle = 'rotating'
       ],
     },
   });
+}
+
+/** A draft with enough shape to exercise every tab: picks, overrides, notes. */
+function fullDraftState() {
+  const state = newDraft({ budget: 200, teams: 3 });
+  state.name = "Kurtz's League";
+  state.draftKey = "2026-08-24 Kurtz's League x9a2";
+  const [a, b] = state.teams;
+  store.addPick({
+    playerId: '4034', playerName: 'Christian McCaffrey', position: 'RB',
+    nflTeam: 'SF', teamId: a.id, price: 62, slot: 'RB1',
+  });
+  store.addPick({
+    playerId: '6794', playerName: 'Ja\'Marr Chase', position: 'WR',
+    nflTeam: 'CIN', teamId: b.id, price: 58, slot: 'FLEX',
+    overrides: { slot: true }, note: 'called out of order',
+  });
+  store.addPick({
+    playerId: '4881', playerName: 'Josh Allen', position: 'QB',
+    nflTeam: 'BUF', teamId: a.id, price: 41, slot: 'QB',
+  });
+  return state;
 }
 
 console.log('\nBudget guardrails');
@@ -632,6 +661,96 @@ await (async () => {
     }, 120);
   });
 })();
+
+console.log('\nBrowser copy of the sheet mapping');
+
+test('public/js/schema.js is in sync with api/_lib/schema.js', () => {
+  const expected = generate(readFileSync(SCHEMA_SOURCE, 'utf8'));
+  const committed = readFileSync(SCHEMA_TARGET, 'utf8');
+  assert.equal(
+    committed,
+    expected,
+    'public/js/schema.js is stale -- run: node scripts/build-schema-browser.mjs',
+  );
+});
+
+test('the generated copy runs in a browser-shaped global and exports the mapping', () => {
+  // Evaluate it the way a <script> tag would, with no Node globals in scope.
+  const App = {};
+  new Function('window', readFileSync(SCHEMA_TARGET, 'utf8'))({ DraftApp: App });
+  assert.ok(App.schema, 'the generated file must define window.DraftApp.schema');
+  for (const name of ['stateToRanges', 'indexRow', 'logRow', 'draftKeyOf', 'TAB_KINDS']) {
+    assert.ok(App.schema[name], `missing ${name}`);
+  }
+});
+
+test('server and browser produce byte-identical rows for the same state', () => {
+  const App = {};
+  new Function('window', readFileSync(SCHEMA_TARGET, 'utf8'))({ DraftApp: App });
+  const state = fullDraftState();
+  assert.deepEqual(App.schema.stateToRanges(state), stateToRanges(state));
+  assert.deepEqual(App.schema.indexRow(state), indexRow(state));
+  assert.deepEqual(App.schema.draftKeyOf(state), draftKeyOf(state));
+});
+
+console.log('\nCredentials from the environment');
+
+test('a real environment variable beats the file', () => {
+  const env = { GOOGLE_SA_EMAIL: 'from-shell@test.iam.gserviceaccount.com' };
+  const path = join(ROOT, 'scripts', '.env.test-tmp');
+  writeFileSync(path, 'GOOGLE_SA_EMAIL=from-file@test.iam.gserviceaccount.com\nAPP_WRITE_TOKEN=abc\n');
+  try {
+    const applied = loadEnvFile(path, env);
+    assert.equal(env.GOOGLE_SA_EMAIL, 'from-shell@test.iam.gserviceaccount.com');
+    assert.equal(env.APP_WRITE_TOKEN, 'abc');
+    assert.deepEqual(applied, ['APP_WRITE_TOKEN']);
+  } finally {
+    rmSync(path, { force: true });
+  }
+});
+
+test('a missing .env.local is not an error', () => {
+  const env = {};
+  assert.deepEqual(loadEnvFile(join(ROOT, 'scripts', 'nope.env'), env), []);
+  assert.deepEqual(env, {});
+});
+
+test('base64 keys survive their own padding', () => {
+  // A base64 private key ends in `=` padding, and indexOf('=') must not eat it.
+  const key = Buffer.from('-----BEGIN PRIVATE KEY-----\nabc\n').toString('base64');
+  assert.ok(key.endsWith('='), 'test needs a padded value to be meaningful');
+  assert.equal(parseEnv(`GOOGLE_SA_PRIVATE_KEY_B64=${key}`).GOOGLE_SA_PRIVATE_KEY_B64, key);
+});
+
+test('the file tolerates how people actually write it', () => {
+  const parsed = parseEnv(
+    [
+      '# a comment',
+      '',
+      'PLAIN=one',
+      '  SPACED = two  ',
+      'QUOTED="three"',
+      "SINGLE='four'",
+      'export EXPORTED=five',           // pasted from shell instructions
+      'CRLF=six\r',                     // Notepad on Windows
+      'EMPTY=',
+      'JUST_A_WORD',                    // no `=`, ignored
+    ].join('\n'),
+  );
+  assert.deepEqual(parsed, {
+    PLAIN: 'one',
+    SPACED: 'two',
+    QUOTED: 'three',
+    SINGLE: 'four',
+    EXPORTED: 'five',
+    CRLF: 'six',
+    EMPTY: '',
+  });
+});
+
+test('a lone quote is a value, not an unterminated string', () => {
+  assert.equal(parseEnv('APP_WRITE_TOKEN="').APP_WRITE_TOKEN, '"');
+});
 
 console.log('\nPlayer data');
 

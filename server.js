@@ -9,15 +9,16 @@
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
 import { join, extname, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { loadEnvFile } from './api/_lib/env.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(ROOT, 'public');
 const PORT = Number(process.env.PORT) || 8787;
 
-loadEnvLocal();
+loadEnvFile(join(ROOT, '.env.local'));
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -36,27 +37,6 @@ const ROUTES = {
   '/api/sync': () => import('./api/sync.js'),
   '/api/state': () => import('./api/state.js'),
 };
-
-/** Minimal .env.local parser -- avoids a dotenv dependency. */
-function loadEnvLocal() {
-  const path = join(ROOT, '.env.local');
-  if (!existsSync(path)) return;
-  for (const rawLine of readFileSync(path, 'utf8').split('\n')) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq < 1) continue;
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (!(key in process.env)) process.env[key] = value;
-  }
-}
 
 async function serveStatic(req, res, pathname) {
   const rel = normalize(pathname === '/' ? '/index.html' : pathname).replace(/^(\.\.[/\\])+/, '');

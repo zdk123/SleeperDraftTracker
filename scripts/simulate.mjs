@@ -22,6 +22,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 
+import { startFakeAppsScript } from './fake-apps-script.mjs';
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME =
   process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -527,10 +529,12 @@ async function reconcile(scenario, browser, intended, sheet) {
     check(scenario, 'sheet Rosters tab names every player', missingRoster.length === 0,
       missingRoster.slice(0, 3).map((p) => p.playerName).join(', '));
 
-    // Restore path: rebuild from the sheet and confirm it round-trips.
+    // Restore path: rebuild from the sheet and confirm it round-trips. Goes
+    // through sync.fetchRemote so whichever backend is configured is the one
+    // actually exercised.
     const restored = await browser.eval(`
-      fetch('api/state?draft=' + encodeURIComponent(DraftApp.store.get().draftKey))
-        .then(r => r.json()).then(d => JSON.stringify({
+      DraftApp.sync.fetchRemote(DraftApp.store.get().draftKey)
+        .then(d => JSON.stringify({
         found: d.found,
         count: d.state ? d.state.picks.length : -1,
         fps: d.state ? d.state.picks.map(p => p.playerId + '|' + p.playerName + '|' +
@@ -838,6 +842,86 @@ async function scenarioCrashAndReload() {
   }
 }
 
+/**
+ * The combination only the Apps Script backend can do: the standalone HTML
+ * file, opened straight off the disk with no server anywhere, still backing the
+ * draft up to a spreadsheet. The browser talks to Google directly, so this is
+ * also the only path where CORS is a real risk -- hence driving it through an
+ * actual file:// page rather than testing the request shape in Node.
+ */
+async function scenarioStandaloneFileWithAppsScript() {
+  const name = 'E. Standalone file (file://) + Apps Script backup';
+  console.log(`\n${name}`);
+  const script = await startFakeAppsScript({ writeToken: 'sim-token' });
+
+  const browser = new Browser();
+  await browser.launch(9405);
+  try {
+    await browser.goto(`file://${join(ROOT, 'DraftBoard-offline.html')}`);
+    await browser.waitFor('document.querySelectorAll(".team-row").length > 0', 'setup screen');
+
+    // Off a file:// URL the app should already have picked this backend, since
+    // there is no server for the other one to talk to.
+    check(name, 'Apps Script is the default backend from file://',
+      (await browser.eval('DraftApp.sync.backendId()')) === 'appsScript',
+      await browser.eval('DraftApp.sync.backendId()'));
+
+    await browser.eval(`(() => {
+      const set = (el, v) => { el.value = v; el.dispatchEvent(new Event('change', {bubbles:true})); };
+      set(document.getElementById('sheet-backend'), 'appsScript');
+      set(document.getElementById('apps-script-url'), ${JSON.stringify(script.url)});
+      set(document.getElementById('token'), 'sim-token');
+    })()`);
+
+    // Click the real button rather than calling sync.health(), so the wiring
+    // between the form and the sync engine is part of what's being tested.
+    await browser.eval(
+      `[...document.querySelectorAll('.btn')].find(b => b.textContent === 'Test connection').click()`
+    );
+    await browser.waitFor(
+      `!!document.querySelector('.note-slot .note') &&
+       !/Testing/.test(document.querySelector('.note-slot .note').textContent)`,
+      'the connection test to finish'
+    );
+    const healthNote = await browser.eval(`document.querySelector('.note-slot .note').textContent`);
+    check(name, 'test connection reaches the script from file://',
+      /Connected to/.test(healthNote), healthNote);
+
+    await setupDraft(browser);
+    const intended = await runFullDraft(browser, { seed: 71 });
+    console.log(`    (entered ${intended.length} picks)`);
+
+    await browser.eval(`DraftApp.sync.flushNow('simulation end')`);
+    for (let i = 0; i < 30; i += 1) {
+      const s = JSON.parse(await browser.eval('JSON.stringify(DraftApp.sync.snapshot())'));
+      if (s.status === 'synced' && !s.dirty) break;
+      await sleep(400);
+    }
+
+    const syncs = script.requests.filter((op) => op === 'sync').length;
+    console.log(`    (script received ${syncs} syncs for ${intended.length} picks)`);
+    check(name, 'sync coalesced rather than writing once per pick',
+      syncs > 0 && syncs < intended.length, `${syncs} syncs / ${intended.length} picks`);
+
+    await reconcile(name, browser, intended, appsScriptSheetView(script.spreadsheet));
+  } finally {
+    await browser.close();
+    await script.close();
+  }
+}
+
+/**
+ * Presents the fake spreadsheet the way reconcile() expects a sheet: a map of
+ * A1 range -> rows, so the same assertions run against both backends.
+ */
+function appsScriptSheetView(spreadsheet) {
+  const values = new Map();
+  for (const [name, rows] of Object.entries(spreadsheet.dump())) {
+    values.set(`'${name.replace(/'/g, "''")}'!A1`, rows);
+  }
+  return { values, writes: values.size };
+}
+
 /** Same as runFullDraft but stops after `limit` picks. */
 async function runFullDraftPartial(browser, limit, seed) {
   const all = [];
@@ -906,12 +990,13 @@ async function main() {
     b: scenarioLocalServerWithSheet,
     c: scenarioConnectionDropsMidDraft,
     d: scenarioCrashAndReload,
+    e: scenarioStandaloneFileWithAppsScript,
   };
 
   console.log(`Full-draft simulations — ${TEAMS.length} teams × ${SPOTS_PER_TEAM} spots = ${TOTAL_PICKS} picks each`);
 
   const toRun = only ? [scenarios[only.toLowerCase()]].filter(Boolean) : Object.values(scenarios);
-  if (!toRun.length) throw new Error(`Unknown scenario "${only}" (use a, b, c or d)`);
+  if (!toRun.length) throw new Error(`Unknown scenario "${only}" (use a, b, c, d or e)`);
 
   for (const scenario of toRun) await scenario();
 

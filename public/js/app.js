@@ -328,7 +328,11 @@
     };
 
     initTheme();
-    sync.init({ token: persistence.prefs().token || '' });
+    sync.init({
+      token: persistence.prefs().token || '',
+      backend: persistence.prefs().backend || App.backends.defaultId(),
+      appsScriptUrl: persistence.prefs().appsScriptUrl || '',
+    });
 
     // A second tab on a full-snapshot sync model is a genuine data-loss path.
     if (!persistence.claimSession()) {
