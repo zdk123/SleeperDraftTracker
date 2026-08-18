@@ -1,24 +1,23 @@
 #!/usr/bin/env node
-// Local run path. Serves public/ and dispatches /api/* to the same handler
-// modules Vercel invokes, so both paths behave identically.
+// Local run path: a static file server for public/, nothing more.
 //
-// Deliberately not `vercel dev`: that requires being logged in to Vercel and
-// reachable over the network, which fails in exactly the situation this
-// fallback exists for. Zero dependencies -- `node server.js` works on a laptop
-// with nothing installed but Node.
+// The spreadsheet backup runs entirely in the browser against the operator's
+// own Apps Script deployment, so there is no server-side API to host. What this
+// still buys over double-clicking DraftBoard-offline.html is a stable http://
+// origin, which a file:// page cannot offer -- that is what lets the service
+// worker cache the app for an offline reload.
+//
+// Zero dependencies: `node server.js` works on a laptop with nothing installed
+// but Node.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { join, extname, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadEnvFile } from './api/_lib/env.js';
-
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(ROOT, 'public');
 const PORT = Number(process.env.PORT) || 8787;
-
-loadEnvFile(join(ROOT, '.env.local'));
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -30,12 +29,6 @@ const MIME = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
-};
-
-const ROUTES = {
-  '/api/health': () => import('./api/health.js'),
-  '/api/sync': () => import('./api/sync.js'),
-  '/api/state': () => import('./api/state.js'),
 };
 
 async function serveStatic(req, res, pathname) {
@@ -65,28 +58,6 @@ async function serveStatic(req, res, pathname) {
 
 const server = createServer(async (req, res) => {
   const pathname = new URL(req.url, `http://localhost:${PORT}`).pathname;
-
-  if (pathname.startsWith('/api/')) {
-    const route = ROUTES[pathname];
-    if (!route) {
-      res.statusCode = 404;
-      res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ ok: false, error: { code: 'not_found' } }));
-    }
-    try {
-      const mod = await route();
-      return await mod.default(req, res);
-    } catch (err) {
-      console.error(`[api] ${pathname} failed:`, err);
-      if (!res.headersSent) {
-        res.statusCode = 500;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ ok: false, error: { code: 'handler_error', message: err.message } }));
-      }
-      return undefined;
-    }
-  }
-
   return serveStatic(req, res, pathname);
 });
 

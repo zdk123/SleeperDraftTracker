@@ -32,11 +32,6 @@
   let lastAttemptAt = 0;
   let token = '';
   let enabled = true;
-  let backendId = App.backends.defaultId();
-
-  function backend() {
-    return App.backends.get(backendId);
-  }
 
   function setStatus(next, message) {
     status = next;
@@ -72,7 +67,7 @@
 
     const state = store.get();
     try {
-      const { status: code, data } = await backend().push(state, {
+      const { status: code, data } = await App.backend.push(state, {
         force,
         summary,
         client: persistence.sessionId,
@@ -109,7 +104,8 @@
       failures += 1;
       dirty = true;
       if (err.code === 'not_configured') {
-        // No credentials on the server: local-only is a valid way to run.
+        // No spreadsheet set up. Running local-only is a valid way to draft --
+        // the sheet is insurance, not a dependency.
         enabled = false;
         setStatus('disabled', 'Saving locally only');
         return;
@@ -135,8 +131,8 @@
   });
 
   const Sync = {
-    init({ token: t, backend: id, appsScriptUrl } = {}) {
-      Sync.configure({ token: t, backend: id, appsScriptUrl });
+    init({ token: t, appsScriptUrl } = {}) {
+      Sync.configure({ token: t, appsScriptUrl });
       window.addEventListener('online', () => {
         if (dirty) push({ summary: 'back online' });
       });
@@ -151,19 +147,14 @@
       Sync.configure({ token: t });
     },
 
-    /** Point the sync engine at a backend. Safe to call repeatedly. */
-    configure({ token: t, backend: id, appsScriptUrl } = {}) {
+    /** Point the sync engine at a spreadsheet. Safe to call repeatedly. */
+    configure({ token: t, appsScriptUrl } = {}) {
       if (t !== undefined) token = t || '';
-      if (id) backendId = App.backends.all[id] ? id : backendId;
-      if (appsScriptUrl !== undefined) App.backends.all.appsScript.setUrl(appsScriptUrl);
-      for (const b of Object.values(App.backends.all)) b.setToken(token);
-      // A backend that was switched away from an unconfigured one deserves
-      // another chance rather than staying permanently disabled.
-      if (!enabled && status === 'disabled') enabled = true;
-    },
-
-    backendId() {
-      return backendId;
+      if (appsScriptUrl !== undefined) App.backend.setUrl(appsScriptUrl);
+      App.backend.setToken(token);
+      // Newly given a URL after running local-only: let it try again rather
+      // than staying disabled for the rest of the draft.
+      if (!enabled && status === 'disabled' && App.backend.configured()) enabled = true;
     },
 
     setEnabled(value) {
@@ -192,8 +183,8 @@
     /** Without a key: the list of drafts. With one: that draft's full state. */
     async fetchRemote(draftKey) {
       const { status: code, data } = draftKey
-        ? await backend().load(draftKey)
-        : await backend().list();
+        ? await App.backend.load(draftKey)
+        : await App.backend.list();
       if (code >= 400 || !data.ok) {
         throw new Error(data.error?.message || `HTTP ${code}`);
       }
@@ -201,12 +192,12 @@
     },
 
     async health() {
-      const { data } = await backend().health();
+      const { data } = await App.backend.health();
       return data;
     },
 
     snapshot() {
-      return { status, detail, lastSyncedAt, lastServerRevision, dirty, enabled, backend: backendId };
+      return { status, detail, lastSyncedAt, lastServerRevision, dirty, enabled };
     },
   };
 

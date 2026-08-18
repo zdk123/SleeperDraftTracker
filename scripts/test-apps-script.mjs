@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-// Exercises apps-script/Code.gs -- the no-Google-Cloud backend.
+// Exercises apps-script/Code.gs -- the whole Google Sheets path.
 //
 // The script itself is loaded from disk and run unmodified (see
-// fake-apps-script.mjs); only Google's APIs are faked. The most important test
-// here is the last one: that a draft pushed through Apps Script produces the
-// same spreadsheet as the same draft pushed through the service-account server.
-// Two backends that disagree about the sheet would be worse than one.
+// fake-apps-script.mjs); only Google's APIs are faked. So a bug in the file the
+// operator pastes into their spreadsheet is a failing test here, which matters
+// because there is no other way to run that code outside Google.
 //
 // Run with: node scripts/test-apps-script.mjs
 
@@ -15,7 +14,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadAppsScript } from './fake-apps-script.mjs';
-import { stateToRanges, indexRow, logRow, draftKeyOf, quoteTab } from '../api/_lib/schema.js';
+import { loadSchema } from './browser-modules.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -32,17 +31,7 @@ function test(name, fn) {
   }
 }
 
-// --- a browser-shaped world, so the client code under test is the real thing --
-
-function browserApp() {
-  const App = {};
-  new Function('window', readFileSync(join(ROOT, 'public', 'js', 'schema.js'), 'utf8'))({
-    DraftApp: App,
-  });
-  return App;
-}
-
-const App = browserApp();
+const App = { schema: loadSchema() };
 
 function draft({ picks = 2, revision = 1, draftId = 'd-alpha', key = '2026-08-24 Test x1y2' } = {}) {
   const teams = [
@@ -281,46 +270,43 @@ test('a draft with an apostrophe in its key round-trips', () => {
   assert.equal(rebuilt.draftKey, state.draftKey);
 });
 
-console.log('\nThe two backends agree');
+console.log('\nThe script writes what the browser asked for');
 
-test('Apps Script and the service-account server write the same cells', () => {
+test('every range the browser sends lands in the right tab, unchanged', () => {
   const state = draft({ picks: 3 });
 
-  // What api/sync.js would send to the Sheets API.
-  const serverTabs = new Map();
-  for (const r of stateToRanges(state)) {
-    serverTabs.set(r.range.split('!')[0].replace(/^'|'$/g, '').replace(/''/g, "'"), r.values);
+  // The rows the browser hands to the script...
+  const expected = new Map();
+  for (const r of App.schema.stateToRanges(state)) {
+    expected.set(r.range.split('!')[0].replace(/^'|'$/g, '').replace(/''/g, "'"), r.values);
   }
 
-  // What the Apps Script backend actually leaves in the spreadsheet.
+  // ...and what actually ends up in the spreadsheet.
   const { post, spreadsheet } = loadAppsScript();
   post(syncPayload(state));
 
-  for (const [tab, values] of serverTabs) {
+  for (const [tab, values] of expected) {
     const sheet = spreadsheet.getSheetByName(tab);
-    assert.ok(sheet, `Apps Script never created ${tab}`);
+    assert.ok(sheet, `the script never created ${tab}`);
     const written = sheet.getRange(1, 1, values.length, values[0].length).getValues();
-    assert.deepEqual(written, values, `${tab} differs between the two backends`);
+    assert.deepEqual(written, values, `${tab} does not match what was sent`);
   }
 });
 
-test('both backends produce the same index row', () => {
+test('the index row survives the round trip intact', () => {
   const state = draft({ picks: 3 });
   const { post, spreadsheet } = loadAppsScript();
   post(syncPayload(state));
   const written = spreadsheet.getSheetByName('Drafts').getDataRange().getValues();
-  const row = written.find((r) => r[0] === draftKeyOf(state));
-  assert.deepEqual(row.slice(0, 9), indexRow(state));
+  const row = written.find((r) => r[0] === App.schema.draftKeyOf(state));
+  assert.deepEqual(row.slice(0, 9), App.schema.indexRow(state));
 });
 
-test('the client quotes tab names the same way the server does', () => {
+test('an apostrophe in a tab name is quoted, not left to split the range', () => {
   const state = draft({ key: "2026-08-24 Kurtz's League x1y2" });
-  assert.deepEqual(
-    App.schema.stateToRanges(state).map((r) => r.range),
-    stateToRanges(state).map((r) => r.range)
-  );
-  assert.equal(App.schema.quoteTab("a'b"), quoteTab("a'b"));
-  assert.ok(logRow(state, {}).length > 0);
+  const ranges = App.schema.stateToRanges(state).map((r) => r.range);
+  assert.ok(ranges.every((r) => r.startsWith("'")), 'tab names must be quoted');
+  assert.equal(App.schema.quoteTab("a'b"), "'a''b'");
 });
 
 console.log(`\n${passed} passed, ${failed} failed\n`);

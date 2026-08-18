@@ -178,15 +178,6 @@
         value: App.persistence.prefs().token || '',
       });
 
-      // Which way this app reaches Google. See public/js/backends.js -- the two
-      // differ only in what the operator has to set up beforehand.
-      const savedBackend = App.persistence.prefs().backend || App.backends.defaultId();
-      const backendSelect = el('select', { id: 'sheet-backend' }, [
-        el('option', { value: 'server', text: 'This app’s server (service account)' }),
-        el('option', { value: 'appsScript', text: 'Script in the spreadsheet (no Google Cloud)' }),
-      ]);
-      backendSelect.value = savedBackend;
-
       const scriptUrlInput = el('input', {
         type: 'url',
         id: 'apps-script-url',
@@ -198,23 +189,19 @@
         scriptUrlInput,
         el('p', {
           class: 'muted small',
-          text: 'From Apps Script → Deploy → New deployment → Web app. It must end in /exec.',
+          text: 'Apps Script → Deploy → Manage deployments. It must end in /exec, not /dev.',
         }),
       ]);
 
-      function syncBackendFields() {
-        const usingScript = backendSelect.value === 'appsScript';
-        scriptUrlField.hidden = !usingScript;
+      function applySheetSettings() {
         App.sync.configure({
-          backend: backendSelect.value,
           appsScriptUrl: scriptUrlInput.value.trim(),
           token: tokenInput.value.trim(),
         });
       }
-      backendSelect.addEventListener('change', syncBackendFields);
-      scriptUrlInput.addEventListener('change', syncBackendFields);
-      tokenInput.addEventListener('change', syncBackendFields);
-      syncBackendFields();
+      scriptUrlInput.addEventListener('change', applySheetSettings);
+      tokenInput.addEventListener('change', applySheetSettings);
+      applySheetSettings();
       const usernameInput = el('input', { type: 'text', id: 'sleeper-user', placeholder: 'Sleeper username' });
       const leagueInput = el('input', { type: 'text', id: 'sleeper-league', placeholder: 'or paste a league ID' });
 
@@ -402,13 +389,10 @@
             el('p', {
               class: 'muted small',
               text:
-                'Optional. With it, every pick is copied to a spreadsheet as you go. Without it, ' +
-                'the draft still works and saves in this browser.',
+                'Optional. With it, every pick is copied to a spreadsheet as you go — ' +
+                'automatically, no button to press. Without it, the draft still works and ' +
+                'saves in this browser.',
             }),
-            el('div', { class: 'field' }, [
-              el('label', { for: 'sheet-backend', text: 'How it reaches the sheet' }),
-              backendSelect,
-            ]),
             scriptUrlField,
             el('div', { class: 'field' }, [
               el('label', { for: 'token', text: 'Access token' }),
@@ -422,7 +406,7 @@
                 onclick: async (e) => {
                   e.target.disabled = true;
                   note(healthNote, 'Testing…');
-                  syncBackendFields();
+                  applySheetSettings();
                   try {
                     const health = await App.sync.health();
                     const kind = health.ok ? 'ok' : health.hasCredentials ? 'warn' : 'info';
@@ -462,11 +446,9 @@
                 }
                 const tokenValue = tokenInput.value.trim();
                 App.persistence.setPref('token', tokenValue);
-                App.persistence.setPref('backend', backendSelect.value);
                 App.persistence.setPref('appsScriptUrl', scriptUrlInput.value.trim());
                 App.sync.configure({
                   token: tokenValue,
-                  backend: backendSelect.value,
                   appsScriptUrl: scriptUrlInput.value.trim(),
                 });
                 store.create({

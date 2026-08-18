@@ -29,27 +29,27 @@ you use the exports (or the Google Sheet) to type the results into Sleeper.
 
 ## Three ways to run it
 
-All three are the same app with the same features. They differ only in what has to be installed and
-whether picks get copied to a Google Sheet.
+All three are the same app with the same features, and **all three can back up to the same Google
+Sheet**. They differ only in what has to be installed.
 
 | | What you do | Needs installing | Needs internet | Google Sheet backup |
 |---|---|---|---|---|
-| **Standalone file** | Double-click `DraftBoard-offline.html` | Nothing | No | With Apps Script |
+| **Standalone file** | Double-click `DraftBoard-offline.html` | Nothing | No (except to sync) | Yes |
 | **Hosted** | Open your `*.vercel.app` link | Nothing | Yes | Yes |
 | **Local server** | Double-click `start-windows.bat` | Node.js | No (except to sync) | Yes |
 
 **On Windows, and want it simple: use the standalone file.** It's one self-contained HTML file —
 double-click it and the board opens in Edge or Chrome. No Node, no install, no terminal window, and
-it keeps working with the wifi off. Everything is saved in the browser and exports normally. It can
-copy picks to a Google Sheet too, if you set up the [Apps Script backend](#optional-google-sheet-backup)
-— that's the one credential style a page with no server behind it can use.
+it keeps working with the wifi off. Everything is saved in the browser and exports normally, and it
+copies picks to a Google Sheet just like the hosted version does.
 
 **Want it on the internet as well?** Deploy it once to Vercel (free, ~10 minutes, instructions
 below) and open the link on draft night. Keep `DraftBoard-offline.html` on the desktop as a backup
 in case the venue's wifi is bad — both can back up to the same spreadsheet.
 
-`start-windows.bat` is only worth it if you want the sheet backup *without* hosting. If Node isn't
-installed, the launcher notices and opens the standalone file for you instead.
+`start-windows.bat` is rarely worth it now that the standalone file does everything. Its one
+advantage is a stable `http://localhost` address, which lets the browser cache the app for an
+offline reload. If Node isn't installed, the launcher opens the standalone file instead.
 
 > Rebuild the standalone file after changing anything: `node scripts/build-offline.mjs`
 
@@ -99,7 +99,7 @@ That's genuinely it. Everything below is optional insurance.
 <details>
 <summary><b>Optional: the local server instead (needs Node.js)</b></summary>
 
-Only needed if you want the Google Sheet backup but don't want to host the app.
+Rarely needed — the standalone file covers the same ground. See the note above.
 
 1. Install **Node.js 20 or newer** from [nodejs.org](https://nodejs.org) — the LTS version.
 2. Double-click `start-windows.bat` (Windows) or `start-mac.command` (macOS). On macOS the first
@@ -118,25 +118,13 @@ Sync is best-effort and never blocks you: picks are written to the browser first
 draft is pushed to the sheet a second or so later. If the write fails, the pill goes red, the app
 retries, and you carry on typing.
 
-Writing to a Google Sheet needs a credential, and there are two ways to hold one. **Pick one** on
-the setup screen under *How it reaches the sheet* — they produce byte-identical spreadsheets, and
-a test enforces that, so this is purely a question of which is less trouble to set up.
+Writing to a Google Sheet needs a credential, and a credential can't live in a web page where
+anyone could read it. The way around that: a small script that lives **inside your spreadsheet** and
+runs as you. There is no Google Cloud project, no key file, and nothing to bill — and because the
+browser talks to Google directly, it works from the hosted app, the local server, and the
+double-clicked `DraftBoard-offline.html` alike.
 
-| | **Service account** | **Apps Script** |
-|---|---|---|
-| Setup | A Google Cloud project, a service account, a downloaded key file | Paste one file into the sheet, click Deploy |
-| Where the credential lives | Vercel env vars, or `.env.local` on the laptop | Nowhere — the script runs as whoever deployed it |
-| Works on Vercel | Yes | Yes |
-| Works from the local server | Yes | Yes |
-| Works from `DraftBoard-offline.html` | **No** — there's no server to hold the key | **Yes** — the browser talks to Google directly |
-| Sharing the sheet | Must share it with the service account's email | Already yours; nothing to share |
-| If it breaks on the night | Nothing to fix without the key | Re-deploy from the sheet's own menu |
-
-**If you want one recommendation:** use **Apps Script**. It has no Google Cloud project to create,
-nothing to bill, and it is the only option that also backs up the standalone file — which is the
-copy most likely to be running if the venue's wifi is bad. The service-account path is the better
-fit if you'd rather the operator have nothing to configure at all, because with Vercel the
-credential is already in place and the setup screen only needs the access token.
+Setup is about five minutes, and you only do it once.
 
 <details>
 <summary><b>Apps Script setup (~5 minutes, no Google Cloud)</b></summary>
@@ -167,13 +155,6 @@ version.
 
 </details>
 
-<details>
-<summary><b>Service account setup (~30 minutes, needs Google Cloud)</b></summary>
-
-The three sections below — Google Cloud, Google Sheet, Connecting it up — are this path.
-
-</details>
-
 #### How drafts are kept apart
 
 Every draft gets a key when you start it: the date, the name you typed, and a short random
@@ -190,78 +171,19 @@ suffix — `2026-08-24 Kurtz League x9a2`. That key names the spreadsheet tabs a
 - **The draft lives in the browser, not on the server.** Two people opening the same hosted URL do
   *not* see the same board — each gets their own empty setup screen. There is no spectator view;
   the room watches the operator's screen on the TV, which is the whole design.
-- **`APP_WRITE_TOKEN` is what stops strangers writing** to your sheet if they find the URL. Set it.
+- **The access token is what stops strangers writing** to your sheet if they find the web app
+  URL. Set it in both `Code.gs` and the setup screen.
 
 The only remaining way two drafts can collide is if they somehow share a key, and the app refuses
 that write rather than replacing anything — taking over is a deliberate click.
 
 <details>
-<summary><b>Google Cloud setup (~15 minutes, once)</b></summary>
+<summary><b>Making a sheet for it</b></summary>
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com) and create a project, e.g.
-   `draft-tracker`.
-2. **APIs & Services → Library →** search "Google Sheets API" → **Enable**. (You do *not* need the
-   Drive API.)
-3. **IAM & Admin → Service Accounts → Create service account.** Name it `draft-writer`. Skip the
-   optional role and permission steps — access comes from sharing the sheet, not from IAM roles.
-4. Open the new service account → **Keys → Add key → Create new key → JSON**. It downloads once and
-   cannot be downloaded again, so keep it somewhere safe.
-5. Copy the service account's email address — it looks like
-   `draft-writer@draft-tracker.iam.gserviceaccount.com`.
+Any Google Sheet you own will do — the script creates the tabs it needs the first time it writes:
+six per draft, named after that draft's key, plus a shared `Drafts` index listing them all.
 
-</details>
-
-<details>
-<summary><b>Google Sheet setup (~5 minutes)</b></summary>
-
-1. Create a new Google Sheet and name it something like "2026 Auction Draft".
-2. **Share it with the service account email as an Editor.** Untick "Notify people" — that address
-   can't receive mail. *Skipping this step is the single most common reason syncing fails.*
-3. Copy the spreadsheet ID out of the URL:
-   `docs.google.com/spreadsheets/d/`**`THIS_PART`**`/edit`
-4. The app creates the tabs it needs the first time it writes — six per draft, named after that
-   draft's key, plus a shared `Drafts` index listing them all.
-
-</details>
-
-<details>
-<summary><b>Connecting it up</b></summary>
-
-Copy `.env.example` to `.env.local` and fill in four values:
-
-| Variable | Where it comes from |
-|---|---|
-| `GOOGLE_SA_EMAIL` | The service account's email address |
-| `GOOGLE_SA_PRIVATE_KEY_B64` | The key file's `private_key`, base64-encoded (see below) |
-| `SHEETS_SPREADSHEET_ID` | From the sheet's URL |
-| `APP_WRITE_TOKEN` | Any long random string you make up |
-
-Encode the private key (run this in the folder where you saved the JSON key):
-
-```bash
-node -e "console.log(Buffer.from(require('./your-key.json').private_key).toString('base64'))"
-```
-
-Base64 avoids the classic problem of newlines inside the key getting mangled.
-
-Generate a token:
-
-```bash
-node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
-```
-
-Then restart the app, paste the token into the setup screen's **Access token** box, and click
-**Test connection**. You want a green "Connected to …". Do this *days* before the draft.
-
-The file is only a convenience. Real environment variables win over it, so these four values can
-come from the shell instead — handy for a one-off test without leaving a key file on disk:
-
-```bash
-GOOGLE_SA_EMAIL=… GOOGLE_SA_PRIVATE_KEY_B64=… SHEETS_SPREADSHEET_ID=… APP_WRITE_TOKEN=… node server.js
-```
-
-On Vercel there is no `.env.local` at all — the same four names go in the project's Environment
-Variables UI, and the server reads them the same way.
+You do **not** need to share the sheet with anyone. The script runs as you, on your own file.
 
 </details>
 
@@ -273,11 +195,11 @@ The nicest setup for a Windows machine: nothing to install, and the Google Sheet
 
 1. Push this folder to a GitHub repo, then import it at [vercel.com](https://vercel.com).
 2. Framework Preset **Other**, Build Command **empty**, Output Directory **`public`**.
-3. **Settings → Environment Variables:** add the same four variables, ticked for Production,
-   Preview, *and* Development.
-4. **Settings → Deployment Protection:** make sure it's **off**, or you'll hit a login wall.
-5. Redeploy — Vercel doesn't apply new environment variables to existing deployments.
-6. Visit `https://your-app.vercel.app/api/health` and confirm it reports `"ok": true`.
+3. **Settings → Deployment Protection:** make sure it's **off**, or you'll hit a login wall.
+
+There are no environment variables and no serverless functions — Vercel is only serving static
+files here. The sheet backup is configured in the app itself, on the setup screen, so the hosted
+copy and the standalone file are set up exactly the same way.
 
 </details>
 
@@ -356,8 +278,8 @@ the specific browser you set it up in. Reopen the same one. Failing that, restor
 Sheet or a JSON backup.
 
 **"Sheet behind" or a red pill.** Keep entering picks — nothing is lost. Afterward, open **Backup →
-Check the sheet's copy** to see what happened. The usual cause is that the sheet was never shared
-with the service account email.
+Check the sheet's copy** to see what happened. The usual cause is a deployment that's older than
+the script — see the Apps Script setup section.
 
 **The laptop died.** On another machine, run the app, open **Backup → Check the sheet's copy**, and
 restore. This only works if you set up the Google Sheet.
@@ -373,33 +295,37 @@ can't fight over the same draft. Use the one you've been typing into, or click "
 ## For developers
 
 ```
-api/            Serverless functions (also served by server.js locally)
-  _lib/         Google auth, Sheets REST wrapper, shared state<->rows schema
+apps-script/    Code.gs — paste this into the spreadsheet; the only server-side code there is
 public/         The whole frontend: plain HTML/CSS/JS, no build step, no dependencies
+  js/schema.js  How draft state maps onto spreadsheet rows, both directions
 scripts/        Player-list builder and the test suites
-server.js       Zero-dependency local server; runs the same api/ handlers Vercel does
+server.js       Zero-dependency static file server for an http:// origin
 ```
 
-There is **no build step and no `npm install`** — not for Vercel, not locally. Google's JWT auth is
-~30 lines of `node:crypto` rather than the `googleapis` package, specifically so the local fallback
-runs on a laptop with nothing but Node installed.
+There is **no build step, no `npm install`, and no backend of our own.** The browser builds the
+finished spreadsheet rows itself and posts them to the operator's own Apps Script deployment, which
+is why the standalone HTML file can back up to a sheet with nothing running behind it.
 
 **Design decisions worth knowing before changing things:**
 
 - **localStorage is the source of truth.** Picks commit locally and synchronously before the UI
   acknowledges them; the Sheet is a replica. Never put a network call on the pick-entry path.
-- **Sync sends the whole state, debounced,** and the server rewrites the sheet's tabs wholesale.
+- **Sync sends the whole state, debounced,** and the script rewrites the sheet's tabs wholesale.
   That's why undo/edit needs no special handling and why a dropped sync is self-healing. Every
-  rewrite clears a fixed range first so a deleted pick can't leave a stale row behind.
+  rewrite is padded to a fixed size so a deleted pick can't leave a stale row behind.
 - **A `revision` counter guards against stale writes** clobbering newer data; the append-only `Log`
   tab keeps an audit trail regardless.
-- **All validation is client-side.** The server intentionally has no opinion about budgets — a
-  rejection arriving mid-draft would be unactionable and would let the sheet disagree with the
-  screen.
+- **`Code.gs` knows nothing about auctions.** It writes the rows it is handed and enforces exactly
+  two guards — refuse a different draft, refuse an older revision. Everything else lives in
+  `public/js/schema.js`, which is testable outside Google; Apps Script code is not.
+- **All validation is client-side.** A rejection arriving mid-draft would be unactionable and would
+  let the sheet disagree with the screen.
+- **Requests to Apps Script must stay "simple".** `Content-Type: text/plain`, no custom headers —
+  anything else triggers a CORS preflight that an Apps Script deployment cannot answer, and the
+  request dies before Google sees it.
 
 ```bash
 node scripts/test.mjs                                   # draft rules, budgets, sheet mapping
-node scripts/test-sync.mjs                              # server handlers vs. a stubbed Google API
 node scripts/test-apps-script.mjs                       # runs apps-script/Code.gs against a fake sheet
 node server.js &                                        # then, in another shell:
 node --experimental-websocket scripts/browser-test.mjs  # drives the real UI in headless Chrome
@@ -409,16 +335,19 @@ node --experimental-websocket scripts/simulate.mjs      # full-draft data-loss s
 node scripts/build-players.mjs                          # refresh public/data/players.json
 node scripts/build-players.mjs --idp                    # ...including individual defensive players
 node scripts/build-offline.mjs                          # rebuild DraftBoard-offline.html
-node scripts/build-schema-browser.mjs                   # regenerate public/js/schema.js after editing api/_lib/schema.js
 ```
 
 **The simulations are the important ones.** Each scenario runs a complete 140-pick auction through
 the real UI and then reconciles four independent copies of the truth — what was entered, the app's
 state, localStorage, and the sheet — plus every export. They cover the standalone file with no
-server, the local server with a stubbed Google, a network outage across a third of the draft, a
-crash-and-reload mid-draft, and the standalone file backing up to Apps Script from `file://`. Run
-them after touching state, sync, or persistence; they found a real sync-starvation bug that none of
-the unit tests could see.
+server at all, the local server writing to a sheet, a network outage across a third of the draft, a
+crash-and-reload mid-draft, and the standalone file backing up to a sheet from `file://`. Run them
+after touching state, sync, or persistence; they found a real sync-starvation bug that none of the
+unit tests could see.
+
+`test-apps-script.mjs` loads `apps-script/Code.gs` from disk and runs it unmodified against a fake
+`SpreadsheetApp`, so a bug in the file the operator pastes into their sheet is a failing test here.
+That matters because there is no other way to run that code outside Google.
 
 `build-offline.mjs` inlines every asset into one file. Note it replaces via a function, never a
 string — a string replacement would interpret `$$`/`` $` ``/`$'` inside the code being inlined, which
@@ -427,8 +356,7 @@ silently corrupts `` `$${...}` `` in utils.js and can splice the document into i
 **Cross-origin notes** (verified from a `file://` page): the standalone build makes no requests for
 its own assets, so nothing can be blocked. Sleeper's read API sends `Access-Control-Allow-Origin: *`,
 which covers the `null` origin a `file://` page sends, so the optional league-name prefill still
-works there when online. With the service-account backend the `/api/*` calls simply fail in
-standalone mode and are caught — the app reports "Local only" rather than throwing.
+works there when online.
 
 Apps Script is reachable from `file://` because the request is deliberately kept *simple*: the POST
 goes out as `text/plain`, so no CORS preflight is sent, and an Apps Script deployment cannot answer

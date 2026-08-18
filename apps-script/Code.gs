@@ -8,12 +8,11 @@
  *
  * The browser sends finished spreadsheet rows -- this script deliberately knows
  * nothing about auctions, budgets, or rosters. All of that mapping lives in one
- * place (api/_lib/schema.js, mirrored to the browser by
- * scripts/build-schema-browser.mjs), so this file cannot drift away from it.
+ * place, public/js/schema.js, so this file cannot drift away from it.
  *
  * Its only real jobs are the two guards that stop good data being replaced by
  * bad: refusing a write from a different draft, and refusing an older revision
- * of the same draft. Both match api/sync.js exactly.
+ * of the same draft.
  */
 
 // Paste the same long random string you put in the app's "Access token" box.

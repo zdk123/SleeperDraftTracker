@@ -22,7 +22,7 @@ const SHELL = [
   'js/players.js',
   'js/validation.js',
   'js/sleeperApi.js',
-  'js/backends.js',
+  'js/sheetBackend.js',
   'js/sync.js',
   'js/restore.js',
   'js/export.js',

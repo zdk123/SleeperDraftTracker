@@ -226,10 +226,16 @@ export async function startFakeAppsScript({ port = 0, writeToken = '' } = {}) {
   const script = loadAppsScript({ writeToken });
   const requests = [];
 
+  const state = { offline: false };
+
   const server = createServer((req, res) => {
     // Apps Script deployments answer any origin; that is what makes them usable
     // from file:// and from a Vercel page alike.
     res.setHeader('Access-Control-Allow-Origin', '*');
+    if (state.offline) {
+      res.socket.destroy(); // as if the venue's wifi had gone
+      return;
+    }
     if (req.method !== 'POST') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(script.doGet().getContent());
@@ -257,6 +263,8 @@ export async function startFakeAppsScript({ port = 0, writeToken = '' } = {}) {
     requests,
     port: server.address().port,
     url: `http://127.0.0.1:${server.address().port}/exec`,
+    /** Simulate the venue's wifi dropping: connections are refused outright. */
+    setOffline(value) { state.offline = Boolean(value); },
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }

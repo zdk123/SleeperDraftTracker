@@ -1,13 +1,17 @@
-// GENERATED FILE -- do not edit.
-// Built from api/_lib/schema.js by scripts/build-schema-browser.mjs.
-// Edit the source and re-run that script; scripts/test.mjs enforces it.
-
 (function (App) {
   'use strict';
 
-// Shared definition of how draft state maps onto the spreadsheet. Both
-// api/sync.js (state -> rows) and api/state.js (rows -> state) use this, so the
-// two directions can't drift apart.
+// How draft state maps onto the spreadsheet, in both directions -- state to
+// rows for a sync, rows back to state for a restore. Keeping them in one file
+// is what stops the two drifting apart.
+//
+// The browser owns this outright: with the Apps Script backend there is no
+// server in the middle, so the page builds the finished rows itself and posts
+// them to Google. apps-script/Code.gs deliberately knows nothing about auctions
+// -- it just writes what it is handed.
+//
+// Node reads this file through loadBrowserModules() in scripts/, so the tests
+// exercise the same code the browser runs rather than a copy of it.
 
 // Each draft gets its own set of tabs, named after its key. Two drafts in one
 // spreadsheet therefore cannot touch each other's data at all -- the isolation

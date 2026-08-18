@@ -30,89 +30,6 @@ const CHROME =
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ---------------------------------------------------------------------------
-// A fake Google, so a "synced" scenario can be checked without a real project.
-// ---------------------------------------------------------------------------
-
-function startFakeGoogle(port) {
-  const sheet = { tabs: new Set(), values: new Map(), appended: [], writes: 0, offline: false };
-
-  // A throw in here used to take the whole harness down mid-run and orphan the
-  // browser, so the handler is wrapped below.
-  const server = createServer(async (req, res) => {
-    try {
-      await handle(req, res);
-    } catch (err) {
-      console.error(`    [fake google] ${req.method} ${req.url} failed: ${err.message}`);
-      if (!res.headersSent) {
-        res.statusCode = 500;
-        res.end('{"error":{"message":"stub failure"}}');
-      }
-    }
-  });
-
-  async function handle(req, res) {
-    const chunks = [];
-    for await (const c of req) chunks.push(c);
-    const raw = Buffer.concat(chunks).toString();
-    const url = new URL(req.url, `http://localhost:${port}`);
-    // The token endpoint is form-encoded; everything else is JSON.
-    let body = null;
-    if (raw && raw.trimStart().startsWith('{')) {
-      try {
-        body = JSON.parse(raw);
-      } catch {
-        body = null;
-      }
-    }
-
-    const json = (status, payload) => {
-      res.statusCode = status;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify(payload));
-    };
-
-    if (sheet.offline) {
-      res.statusCode = 503;
-      return res.end('{"error":{"message":"simulated outage"}}');
-    }
-
-    if (url.pathname === '/token') {
-      return json(200, { access_token: 'fake', expires_in: 3600 });
-    }
-    if (url.pathname.endsWith(':batchUpdate') && !url.pathname.includes('/values')) {
-      for (const r of body?.requests || []) if (r.addSheet) sheet.tabs.add(r.addSheet.properties.title);
-      return json(200, { replies: [] });
-    }
-    if (url.pathname.endsWith('/values:batchUpdate')) {
-      sheet.writes += 1;
-      for (const entry of body?.data || []) sheet.values.set(entry.range, entry.values);
-      return json(200, { totalUpdatedCells: 1 });
-    }
-    if (url.pathname.endsWith('/values:batchGet')) {
-      const ranges = url.searchParams.getAll('ranges');
-      return json(200, { valueRanges: ranges.map((r) => ({ range: r, values: lookup(sheet, r) })) });
-    }
-    if (url.pathname.includes('/values/') && url.pathname.endsWith(':append')) {
-      sheet.appended.push(...(body?.values || []));
-      return json(200, { updates: { updatedRows: body?.values?.length || 0 } });
-    }
-    if (url.pathname.includes('/values/')) {
-      const range = decodeURIComponent(url.pathname.split('/values/')[1]);
-      return json(200, { values: lookup(sheet, range) });
-    }
-    // spreadsheets.get
-    return json(200, {
-      properties: { title: 'Simulated Sheet' },
-      sheets: [...sheet.tabs].map((t) => ({ properties: { title: t } })),
-    });
-  }
-
-  return new Promise((resolve) => {
-    server.listen(port, () => resolve({ sheet, server }));
-  });
-}
-
 /** Tabs are now named "<draft key> <Kind>" and quoted in A1 ranges. */
 function tabRows(sheet, kind) {
   for (const [range, values] of sheet.values) {
@@ -122,45 +39,15 @@ function tabRows(sheet, kind) {
   return null;
 }
 
-function lookup(sheet, range) {
-  if (sheet.values.has(range)) return sheet.values.get(range);
-  const tab = range.split('!')[0].replace(/^'|'$/g, '');
-  for (const [key, value] of sheet.values) {
-    if (key.split('!')[0].replace(/^'|'$/g, '') === tab) return value;
-  }
-  return [];
-}
-
 // ---------------------------------------------------------------------------
-// The app's own server, pointed at the fake Google.
+// The app's own server: static files only, for an http:// origin.
 // ---------------------------------------------------------------------------
 
-function startAppServer(port, googlePort) {
-  const { generateKeyPairSync } = require$crypto();
-  const { privateKey } = generateKeyPairSync('rsa', {
-    modulusLength: 2048,
-    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-    publicKeyEncoding: { type: 'spki', format: 'pem' },
-  });
-
+function startAppServer(port) {
   return spawn(process.execPath, [join(ROOT, 'server.js')], {
-    env: {
-      ...process.env,
-      PORT: String(port),
-      GOOGLE_SA_EMAIL: 'sim@test.iam.gserviceaccount.com',
-      GOOGLE_SA_PRIVATE_KEY_B64: Buffer.from(privateKey).toString('base64'),
-      SHEETS_SPREADSHEET_ID: 'sim_sheet',
-      APP_WRITE_TOKEN: '',
-      // Redirect Google traffic at the fake.
-      SIM_GOOGLE_BASE: `http://127.0.0.1:${googlePort}`,
-    },
+    env: { ...process.env, PORT: String(port), SIM_APP_SERVER: '1' },
     stdio: 'ignore',
   });
-}
-
-function require$crypto() {
-  // Lazy so the offline-only scenarios don't need it.
-  return globalThis.__cryptoMod;
 }
 
 /**
@@ -565,6 +452,29 @@ function firstDiff(a, b) {
 // Driving a full draft through the real UI
 // ---------------------------------------------------------------------------
 
+/**
+ * Point the app at a spreadsheet before the draft starts, the way the operator
+ * does: type into the setup fields and let the change handlers apply them.
+ */
+async function configureSheet(browser, url, token = '') {
+  await browser.eval(`(() => {
+    const set = (el, v) => { el.value = v; el.dispatchEvent(new Event('change', {bubbles:true})); };
+    set(document.getElementById('apps-script-url'), ${JSON.stringify(url)});
+    set(document.getElementById('token'), ${JSON.stringify(token)});
+  })()`);
+}
+
+/** Flush the debounce and wait for the sheet to catch up. */
+async function settleSync(browser, tries = 30) {
+  await browser.eval(`DraftApp.sync.flushNow('simulation end')`);
+  for (let i = 0; i < tries; i += 1) {
+    const s = JSON.parse(await browser.eval('JSON.stringify(DraftApp.sync.snapshot())'));
+    if (s.status === 'synced' && !s.dirty) return true;
+    await sleep(400);
+  }
+  return false;
+}
+
 async function setupDraft(browser) {
   await browser.eval(`(() => {
     const set = (el, v) => { el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); };
@@ -715,11 +625,11 @@ async function scenarioStandaloneFile() {
 }
 
 async function scenarioLocalServerWithSheet() {
-  const name = 'B. Local server + Google Sheet';
+  const name = 'B. Local server (http://) + Google Sheet';
   console.log(`\n${name}`);
   await assertPortFree(8791, 'scenario B');
-  const { sheet, server } = await startFakeGoogle(9502);
-  const app = startAppServer(8791, 9502);
+  const script = await startFakeAppsScript({ writeToken: '' });
+  const app = startAppServer(8791);
   await waitForServer(8791, 'app server');
 
   const browser = new Browser();
@@ -727,35 +637,33 @@ async function scenarioLocalServerWithSheet() {
   try {
     await browser.goto('http://localhost:8791/');
     await browser.waitFor('document.querySelectorAll(".team-row").length > 0', 'setup screen');
+    await configureSheet(browser, script.url);
     await setupDraft(browser);
+
     const syncTrace = [];
     const intended = await runFullDraft(browser, {
       seed: 23,
       onPick: async (n, b) => {
         if (n % 20 === 0) {
           const snap = JSON.parse(await b.eval('JSON.stringify(DraftApp.sync.snapshot())'));
-          syncTrace.push(`pick ${n}: status=${snap.status} dirty=${snap.dirty} writes=${sheet.writes}`);
+          const writes = script.requests.filter((op) => op === 'sync').length;
+          syncTrace.push(`pick ${n}: status=${snap.status} dirty=${snap.dirty} writes=${writes}`);
         }
       },
     });
     console.log(`    (entered ${intended.length} picks)`);
     for (const line of syncTrace) console.log(`      ${line}`);
 
-    // Let the debounced sync settle.
-    await browser.eval(`DraftApp.sync.flushNow('simulation end')`);
-    for (let i = 0; i < 30; i += 1) {
-      const s = JSON.parse(await browser.eval('JSON.stringify(DraftApp.sync.snapshot())'));
-      if (s.status === 'synced' && !s.dirty) break;
-      await sleep(400);
-    }
-    console.log(`    (sheet received ${sheet.writes} writes for ${intended.length} picks)`);
-    await reconcile(name, browser, intended, sheet);
+    await settleSync(browser);
+    const writes = script.requests.filter((op) => op === 'sync').length;
+    console.log(`    (sheet received ${writes} writes for ${intended.length} picks)`);
+    await reconcile(name, browser, intended, appsScriptSheetView(script.spreadsheet));
     check(name, 'sync coalesced rather than writing once per pick',
-      sheet.writes < intended.length, `${sheet.writes} writes / ${intended.length} picks`);
+      writes > 0 && writes < intended.length, `${writes} writes / ${intended.length} picks`);
   } finally {
     await browser.close();
     app.kill();
-    server.close();
+    await script.close();
   }
 }
 
@@ -763,8 +671,8 @@ async function scenarioConnectionDropsMidDraft() {
   const name = 'C. Connection drops mid-draft, then returns';
   console.log(`\n${name}`);
   await assertPortFree(8792, 'scenario C');
-  const { sheet, server } = await startFakeGoogle(9503);
-  const app = startAppServer(8792, 9503);
+  const script = await startFakeAppsScript({ writeToken: '' });
+  const app = startAppServer(8792);
   await waitForServer(8792, 'app server');
 
   const browser = new Browser();
@@ -772,6 +680,7 @@ async function scenarioConnectionDropsMidDraft() {
   try {
     await browser.goto('http://localhost:8792/');
     await browser.waitFor('document.querySelectorAll(".team-row").length > 0', 'setup screen');
+    await configureSheet(browser, script.url);
     await setupDraft(browser);
 
     let droppedAt = null;
@@ -781,31 +690,25 @@ async function scenarioConnectionDropsMidDraft() {
         // Kill the network a third of the way in, restore it two thirds in.
         if (n === Math.floor(TOTAL_PICKS / 3)) {
           droppedAt = n;
-          sheet.offline = true;
+          script.setOffline(true);
           await b.setOffline(true);
         }
         if (n === Math.floor((TOTAL_PICKS * 2) / 3)) {
-          sheet.offline = false;
+          script.setOffline(false);
           await b.setOffline(false);
         }
       },
     });
     console.log(`    (entered ${intended.length} picks; network was down from pick ${droppedAt})`);
 
-    await browser.eval(`DraftApp.sync.flushNow('after outage')`);
-    for (let i = 0; i < 40; i += 1) {
-      const s = JSON.parse(await browser.eval('JSON.stringify(DraftApp.sync.snapshot())'));
-      if (s.status === 'synced' && !s.dirty) break;
-      await sleep(400);
-    }
-
-    await reconcile(name, browser, intended, sheet);
+    await settleSync(browser, 40);
+    await reconcile(name, browser, intended, appsScriptSheetView(script.spreadsheet));
     check(name, 'picks entered during the outage survived',
       intended.length >= TOTAL_PICKS * 0.9, `only ${intended.length} picks`);
   } finally {
     await browser.close();
     app.kill();
-    server.close();
+    await script.close();
   }
 }
 
@@ -849,8 +752,8 @@ async function scenarioCrashAndReload() {
  * also the only path where CORS is a real risk -- hence driving it through an
  * actual file:// page rather than testing the request shape in Node.
  */
-async function scenarioStandaloneFileWithAppsScript() {
-  const name = 'E. Standalone file (file://) + Apps Script backup';
+async function scenarioStandaloneFileWithSheet() {
+  const name = 'E. Standalone file (file://) + Google Sheet';
   console.log(`\n${name}`);
   const script = await startFakeAppsScript({ writeToken: 'sim-token' });
 
@@ -860,18 +763,7 @@ async function scenarioStandaloneFileWithAppsScript() {
     await browser.goto(`file://${join(ROOT, 'DraftBoard-offline.html')}`);
     await browser.waitFor('document.querySelectorAll(".team-row").length > 0', 'setup screen');
 
-    // Off a file:// URL the app should already have picked this backend, since
-    // there is no server for the other one to talk to.
-    check(name, 'Apps Script is the default backend from file://',
-      (await browser.eval('DraftApp.sync.backendId()')) === 'appsScript',
-      await browser.eval('DraftApp.sync.backendId()'));
-
-    await browser.eval(`(() => {
-      const set = (el, v) => { el.value = v; el.dispatchEvent(new Event('change', {bubbles:true})); };
-      set(document.getElementById('sheet-backend'), 'appsScript');
-      set(document.getElementById('apps-script-url'), ${JSON.stringify(script.url)});
-      set(document.getElementById('token'), 'sim-token');
-    })()`);
+    await configureSheet(browser, script.url, 'sim-token');
 
     // Click the real button rather than calling sync.health(), so the wiring
     // between the form and the sync engine is part of what's being tested.
@@ -891,13 +783,7 @@ async function scenarioStandaloneFileWithAppsScript() {
     const intended = await runFullDraft(browser, { seed: 71 });
     console.log(`    (entered ${intended.length} picks)`);
 
-    await browser.eval(`DraftApp.sync.flushNow('simulation end')`);
-    for (let i = 0; i < 30; i += 1) {
-      const s = JSON.parse(await browser.eval('JSON.stringify(DraftApp.sync.snapshot())'));
-      if (s.status === 'synced' && !s.dirty) break;
-      await sleep(400);
-    }
-
+    await settleSync(browser);
     const syncs = script.requests.filter((op) => op === 'sync').length;
     console.log(`    (script received ${syncs} syncs for ${intended.length} picks)`);
     check(name, 'sync coalesced rather than writing once per pick',
@@ -972,14 +858,13 @@ function killStaleBrowsers() {
 /** Also sweep app servers this harness spawned, for the same reason. */
 function killStaleServers() {
   try {
-    spawn('pkill', ['-f', 'SIM_GOOGLE_BASE'], { stdio: 'ignore' });
+    spawn('pkill', ['-f', 'SIM_APP_SERVER'], { stdio: 'ignore' });
   } catch {
     /* nothing to clean up */
   }
 }
 
 async function main() {
-  globalThis.__cryptoMod = await import('node:crypto');
   killStaleBrowsers();
   killStaleServers();
   await sleep(500);
@@ -990,7 +875,7 @@ async function main() {
     b: scenarioLocalServerWithSheet,
     c: scenarioConnectionDropsMidDraft,
     d: scenarioCrashAndReload,
-    e: scenarioStandaloneFileWithAppsScript,
+    e: scenarioStandaloneFileWithSheet,
   };
 
   console.log(`Full-draft simulations — ${TEAMS.length} teams × ${SPOTS_PER_TEAM} spots = ${TOTAL_PICKS} picks each`);

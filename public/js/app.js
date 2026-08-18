@@ -330,7 +330,6 @@
     initTheme();
     sync.init({
       token: persistence.prefs().token || '',
-      backend: persistence.prefs().backend || App.backends.defaultId(),
       appsScriptUrl: persistence.prefs().appsScriptUrl || '',
     });
 
