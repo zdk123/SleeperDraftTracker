@@ -52,6 +52,11 @@
       return players.length;
     },
 
+    /** The whole filtered list. Used by the simulation harness. */
+    all() {
+      return players;
+    },
+
     byId(id) {
       return players.find((p) => p.id === id) || null;
     },

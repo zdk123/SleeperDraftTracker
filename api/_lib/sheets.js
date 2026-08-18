@@ -1,6 +1,10 @@
 import { getAccessToken } from './googleAuth.js';
 
-const BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
+// SIM_GOOGLE_BASE exists only so the simulation harness can point this at a
+// stub. Never set it in a real deployment.
+const BASE = process.env.SIM_GOOGLE_BASE
+  ? `${process.env.SIM_GOOGLE_BASE}/v4/spreadsheets`
+  : 'https://sheets.googleapis.com/v4/spreadsheets';
 
 function spreadsheetId() {
   const id = process.env.SHEETS_SPREADSHEET_ID;

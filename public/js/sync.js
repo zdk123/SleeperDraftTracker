@@ -13,6 +13,11 @@
   // handling at all.
 
   const DEBOUNCE_MS = 1500;
+  // Ceiling on how long a burst of picks can defer a write. Without it, picks
+  // arriving closer together than the debounce keep pushing the sync back and
+  // the sheet never gets written -- the sheet would be arbitrarily far behind
+  // exactly when the room is moving fastest.
+  const MAX_DEFER_MS = 6000;
   const MIN_INTERVAL_MS = 2000;
   const MAX_BACKOFF_MS = 32000;
 
@@ -123,7 +128,9 @@
     }
   }
 
-  const schedule = App.utils.debounce((summary) => push({ summary }), DEBOUNCE_MS);
+  const schedule = App.utils.debounce((summary) => push({ summary }), DEBOUNCE_MS, {
+    maxWait: MAX_DEFER_MS,
+  });
 
   const Sync = {
     init({ token: t } = {}) {

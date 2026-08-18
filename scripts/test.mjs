@@ -460,6 +460,48 @@ test('slot expansion numbers duplicates and leaves singles bare', () => {
   assert.equal(slots.length, 15);
 });
 
+console.log('\nDebounce (guards the sheet-sync starvation bug)');
+
+await (async () => {
+  const { debounce } = App.utils;
+
+  await new Promise((resolve) => {
+    let fired = 0;
+    const fn = debounce(() => { fired += 1; }, 50);
+    // Calls closer together than the wait, for longer than the wait.
+    const iv = setInterval(() => fn(), 15);
+    setTimeout(() => {
+      clearInterval(iv);
+      test('plain debounce defers while calls keep coming', () =>
+        assert.equal(fired, 0, `fired ${fired} times`));
+      resolve();
+    }, 200);
+  });
+
+  await new Promise((resolve) => {
+    let fired = 0;
+    const fn = debounce(() => { fired += 1; }, 50, { maxWait: 100 });
+    const iv = setInterval(() => fn(), 15);
+    setTimeout(() => {
+      clearInterval(iv);
+      test('maxWait forces the work through during a sustained burst', () =>
+        assert.ok(fired >= 1, `fired ${fired} times in 250ms with maxWait 100ms`));
+      resolve();
+    }, 250);
+  });
+
+  await new Promise((resolve) => {
+    let fired = 0;
+    const fn = debounce(() => { fired += 1; }, 30, { maxWait: 200 });
+    fn();
+    setTimeout(() => {
+      test('a single call still fires after the normal wait', () =>
+        assert.equal(fired, 1, `fired ${fired} times`));
+      resolve();
+    }, 120);
+  });
+})();
+
 console.log('\nPlayer data');
 
 test('the generated player list looks sane', () => {

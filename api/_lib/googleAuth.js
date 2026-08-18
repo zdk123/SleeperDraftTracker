@@ -6,7 +6,11 @@ import { createSign } from 'node:crypto';
 // which is what lets the local fallback server run on a laptop with nothing
 // but Node installed.
 
-const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+// SIM_GOOGLE_BASE exists only so the simulation harness can point this at a
+// stub. Never set it in a real deployment.
+const TOKEN_URL = process.env.SIM_GOOGLE_BASE
+  ? `${process.env.SIM_GOOGLE_BASE}/token`
+  : 'https://oauth2.googleapis.com/token';
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 const LIFETIME_SECONDS = 3600;
 const REFRESH_MARGIN_SECONDS = 300;

@@ -52,7 +52,9 @@
           },
           [
             el('span', { class: 'ac__name', text: player.n }),
-            el('span', { class: 'ac__meta', text: `${player.p}${player.t ? ` · ${player.t}` : ''}` }),
+            // No team means Sleeper has them as a free agent -- label it rather
+            // than showing a blank, so it doesn't look like missing data.
+            el('span', { class: 'ac__meta', text: `${player.p} · ${player.t || 'FA'}` }),
             player.drafted ? el('span', { class: 'ac__taken', text: 'drafted' }) : null,
           ]
         )

@@ -30,16 +30,43 @@
       return `${prefix || 'id'}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
     },
 
-    debounce(fn, wait) {
+    /**
+     * Debounce with an optional ceiling on how long calls can be deferred.
+     *
+     * Without `maxWait`, a steady stream of calls closer together than `wait`
+     * postpones the work forever -- which is exactly what a fast run of picks
+     * does, and it silently kept the spreadsheet from ever being written.
+     * `maxWait` guarantees the work runs within that long of the first call in
+     * a burst, however many calls follow.
+     */
+    debounce(fn, wait, { maxWait } = {}) {
       let timer = null;
-      const wrapped = (...args) => {
-        clearTimeout(timer);
-        timer = setTimeout(() => fn(...args), wait);
+      let burstStartedAt = 0;
+
+      const invoke = (args) => {
+        timer = null;
+        burstStartedAt = 0;
+        fn(...args);
       };
-      wrapped.cancel = () => clearTimeout(timer);
+
+      const wrapped = (...args) => {
+        const now = Date.now();
+        if (!burstStartedAt) burstStartedAt = now;
+        clearTimeout(timer);
+        const delay = maxWait
+          ? Math.min(wait, Math.max(0, burstStartedAt + maxWait - now))
+          : wait;
+        timer = setTimeout(() => invoke(args), delay);
+      };
+
+      wrapped.cancel = () => {
+        clearTimeout(timer);
+        timer = null;
+        burstStartedAt = 0;
+      };
       wrapped.flush = (...args) => {
         clearTimeout(timer);
-        fn(...args);
+        invoke(args);
       };
       return wrapped;
     },

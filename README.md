@@ -323,10 +323,19 @@ node scripts/test-sync.mjs                              # server handlers vs. a 
 node server.js &                                        # then, in another shell:
 node --experimental-websocket scripts/browser-test.mjs  # drives the real UI in headless Chrome
 node --experimental-websocket scripts/offline-test.mjs  # drives the standalone file over file://
+node --experimental-websocket scripts/simulate.mjs      # full-draft data-loss simulations
 
 node scripts/build-players.mjs                          # refresh public/data/players.json
+node scripts/build-players.mjs --idp                    # ...including individual defensive players
 node scripts/build-offline.mjs                          # rebuild DraftBoard-offline.html
 ```
+
+**The simulations are the important ones.** Each scenario runs a complete 140-pick auction through
+the real UI and then reconciles four independent copies of the truth — what was entered, the app's
+state, localStorage, and the sheet — plus every export. They cover the standalone file with no
+server, the local server with a stubbed Google, a network outage across a third of the draft, and a
+crash-and-reload mid-draft. Run them after touching state, sync, or persistence; they found a real
+sync-starvation bug that none of the unit tests could see.
 
 `build-offline.mjs` inlines every asset into one file. Note it replaces via a function, never a
 string — a string replacement would interpret `$$`/`` $` ``/`$'` inside the code being inlined, which
