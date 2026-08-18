@@ -195,14 +195,23 @@
         }),
       ]);
 
+      const viewTokenInput = el('input', {
+        type: 'text',
+        id: 'view-token',
+        placeholder: 'Leave blank to keep the draft private',
+        value: App.persistence.prefs().viewToken || '',
+      });
+
       function applySheetSettings() {
         App.sync.configure({
           appsScriptUrl: scriptUrlInput.value.trim(),
           token: tokenInput.value.trim(),
         });
+        App.persistence.setPref('viewToken', viewTokenInput.value.trim());
       }
       scriptUrlInput.addEventListener('change', applySheetSettings);
       tokenInput.addEventListener('change', applySheetSettings);
+      viewTokenInput.addEventListener('change', applySheetSettings);
       applySheetSettings();
       const usernameInput = el('input', { type: 'text', id: 'sleeper-user', placeholder: 'Sleeper username' });
       const leagueInput = el('input', { type: 'text', id: 'sleeper-league', placeholder: 'or paste a league ID' });
@@ -400,6 +409,19 @@
               el('label', { for: 'token', text: 'Access token' }),
               tokenInput,
             ]),
+            el('div', { class: 'field' }, [
+              el('label', { for: 'view-token', text: 'Viewer link token' }),
+              viewTokenInput,
+              el('p', {
+                class: 'muted small',
+                text:
+                  'Optional, and must be DIFFERENT from the access token above. It lets you share ' +
+                  'a link so people can follow their own roster on their phones — read-only, they ' +
+                  'cannot change the draft. Paste the same value into VIEW_TOKEN in Code.gs, then ' +
+                  're-publish: Deploy → Manage deployments → ✏️ → Version: New version → Deploy. ' +
+                  '(“New deployment” would give you a different URL and break this setup.)',
+              }),
+            ]),
             el('div', { class: 'field-row' }, [
               el('button', {
                 type: 'button',
@@ -447,7 +469,19 @@
                   return;
                 }
                 const tokenValue = tokenInput.value.trim();
+                const viewTokenValue = viewTokenInput.value.trim();
+                // Pasting the write token into the viewer box would hand every
+                // guest the ability to overwrite the draft -- the exact thing
+                // the second token exists to prevent.
+                if (viewTokenValue && viewTokenValue === tokenValue) {
+                  window.alert(
+                    'The viewer link token must be different from the access token. ' +
+                      'Anyone you share the link with would otherwise be able to change the draft.'
+                  );
+                  return;
+                }
                 App.persistence.setPref('token', tokenValue);
+                App.persistence.setPref('viewToken', viewTokenValue);
                 App.persistence.setPref('appsScriptUrl', scriptUrlInput.value.trim());
                 App.sync.configure({
                   token: tokenValue,

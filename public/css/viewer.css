@@ -1,0 +1,288 @@
+/* The guest view: one phone, one team, held at arm's length.
+   Every colour here comes from the tokens in app.css, so the light/dark toggle
+   works without this file knowing anything about themes. */
+
+body.viewer {
+  background: var(--bg-sunk);
+  padding: 0 0 3rem;
+}
+
+#view-root {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* --- freshness ---------------------------------------------------------- */
+
+.vfresh {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.vfresh__text {
+  flex: 1;
+}
+
+.vfresh__dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  flex: none;
+  background: var(--ok);
+}
+
+.vfresh--stale .vfresh__dot { background: var(--warn); }
+.vfresh--dead .vfresh__dot { background: var(--bad); }
+.vfresh--unknown .vfresh__dot { background: var(--text-faint); }
+
+.vfresh--stale { border-color: var(--warn); }
+.vfresh--dead { border-color: var(--bad); }
+
+/* --- cards -------------------------------------------------------------- */
+
+.vcard {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.9rem;
+  box-shadow: var(--shadow);
+}
+
+.vcard h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+.vcard--mine {
+  border-color: var(--border-strong);
+}
+
+.vcard__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.vcard__team {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+
+.vcard__money {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+}
+
+.vcard__left {
+  font-size: 1.5rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.vcard__of {
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+
+.vcard__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  margin: 0.75rem 0 0.25rem;
+  text-align: center;
+}
+
+.vstat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.25rem;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+}
+
+.vstat__num {
+  font-size: 1.05rem;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+
+.vstat__lbl {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+}
+
+/* --- roster ------------------------------------------------------------- */
+
+.roster {
+  list-style: none;
+  margin: 0.85rem 0 0;
+  padding: 0;
+}
+
+.roster__row {
+  display: grid;
+  grid-template-columns: 3.2rem 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.roster__row:first-child { border-top: 0; }
+
+.roster__slot {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  text-transform: uppercase;
+}
+
+.roster__player {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.roster__player > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster__player--empty { color: var(--text-faint); font-style: italic; }
+.roster__row.is-empty { opacity: 0.75; }
+
+.roster__price {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* --- nominating, recent, league ---------------------------------------- */
+
+.vnominating {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--info-bg);
+  border-radius: var(--radius);
+}
+
+.vnominating__lbl {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+}
+
+.vnominating__team { font-weight: 650; }
+
+.vrecent { list-style: none; margin: 0; padding: 0; }
+
+.vrecent__row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.vrecent__row:first-child { border-top: 0; }
+
+.vrecent__player { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.vrecent__team {
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  max-width: 7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vrecent__price { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.lt {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.lt th {
+  text-align: right;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  padding: 0 0 0.35rem;
+  font-weight: 600;
+}
+
+.lt th:first-child, .lt .lt__name { text-align: left; }
+
+.lt td {
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--border);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.lt .lt__name {
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lt tr.is-mine { font-weight: 650; }
+.lt tr.is-mine .lt__name { color: var(--accent); }
+
+/* --- team picker and messages ------------------------------------------ */
+
+.vpick, .vmessage {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin-top: 2rem;
+}
+
+.vpick h1, .vmessage h1 { margin: 0 0 0.35rem; font-size: 1.25rem; }
+
+.vpick__grid {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1rem 0;
+}
+
+.vpick__team { width: 100%; justify-content: center; }
+
+.vfoot { text-align: center; margin: 0.5rem 0 0; }

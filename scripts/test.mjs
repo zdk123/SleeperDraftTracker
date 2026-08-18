@@ -790,6 +790,17 @@ test('the service worker precaches everything index.html loads', () => {
   assert.deepEqual(missing, [], `not precached by sw.js: ${missing.join(', ')}`);
 });
 
+test('every script view.html loads exists on disk', () => {
+  // view.html is opened by people who are not in the room and cannot be helped
+  // if it 404s. It is deliberately absent from the service worker shell, so
+  // nothing else checks its asset list.
+  const html = readFileSync(join(ROOT, 'public', 'view.html'), 'utf8');
+  const referenced = [...html.matchAll(/(?:src|href)="((?:js|css|data)\/[^"]+)"/g)].map((m) => m[1]);
+  assert.ok(referenced.length > 5, 'expected to find the asset list in view.html');
+  const missing = referenced.filter((asset) => !existsSync(join(ROOT, 'public', asset)));
+  assert.deepEqual(missing, [], `view.html references missing files: ${missing.join(', ')}`);
+});
+
 test('the cached shell has no entries that no longer exist', () => {
   const sw = readFileSync(join(ROOT, 'public', 'sw.js'), 'utf8');
   const shell = [...sw.matchAll(/'((?:js|css|data)\/[^']+)'/g)].map((m) => m[1]);

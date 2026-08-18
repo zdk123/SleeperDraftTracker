@@ -137,6 +137,15 @@
       return result(200, { ok: true, drafts: App.schema.parseIndex(res.data.rows || []) });
     },
 
+    /**
+     * "Has anything changed?" -- a few cells, not the whole draft. Viewer phones
+     * ask this constantly and only fall through to load() when the revision
+     * moves, which is the only reason polling is affordable.
+     */
+    poll(draftKey) {
+      return call({ op: 'poll', draftKey });
+    },
+
     async load(draftKey) {
       const res = await call({ op: 'load', draftKey });
       if (res.status !== 200) return res;

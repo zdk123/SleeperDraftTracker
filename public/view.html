@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>My Draft Team</title>
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="css/viewer.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='14'>🏈</text></svg>"
+    />
+  </head>
+  <body class="viewer">
+    <main id="view-root"></main>
+
+    <!-- Read-only by construction: sync.js, entry.js and the session lock are
+         all absent, so there is no code path here that can write to the draft.
+         players.json is absent too -- a guest's phone has no use for 250KB of
+         player data, and this page is often opened on cellular.
+
+         No service worker either: offline caching buys a viewer nothing, since
+         with no connection there is no draft to show. -->
+    <script src="js/utils.js"></script>
+    <script src="js/schema.js"></script>
+    <script src="js/state.js"></script>
+    <script src="js/persistence.js"></script>
+    <script src="js/shareLink.js"></script>
+    <script src="js/sheetBackend.js"></script>
+    <script src="js/viewer.js"></script>
+    <script src="js/views/viewerBoard.js"></script>
+    <script src="js/viewerApp.js"></script>
+  </body>
+</html>

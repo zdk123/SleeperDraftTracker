@@ -57,6 +57,9 @@
     if (kind === 'history') {
       title.textContent = 'All picks';
       App.views.history.render(body);
+    } else if (kind === 'share') {
+      title.textContent = 'Share with the room';
+      renderSharePanel(body);
     } else if (kind === 'export') {
       title.textContent = 'Save & export';
       renderExportPanel(body);
@@ -102,6 +105,150 @@
       ]),
       el('h3', { text: 'Copy & paste' }),
       el('textarea', { class: 'copybox', readonly: true, rows: '18', text: App.exporter.rostersText() })
+    );
+  }
+
+  /**
+   * The viewer link. Everything a guest's phone needs travels in the URL,
+   * because there is no server to hold it -- so this panel is the only place
+   * that link can come from.
+   */
+  function renderSharePanel(body) {
+    clear(body);
+    const prefs = persistence.prefs();
+    const scriptUrl = prefs.appsScriptUrl || '';
+    const viewToken = prefs.viewToken || '';
+    const state = store.get();
+
+    const explain = (text) => el('p', { class: 'muted', text });
+
+    // A link is only worth handing out if the people you hand it to can open it.
+    // file:// has no address at all, and localhost means "this laptop" on every
+    // phone that tries it -- so say that plainly instead of producing a link
+    // that fails silently in someone else's hands.
+    const host = window.location.hostname;
+    const reachable =
+      window.location.protocol.startsWith('http') &&
+      host !== 'localhost' &&
+      host !== '127.0.0.1' &&
+      host !== '';
+
+    if (!reachable) {
+      body.append(
+        el('h3', { text: 'Not from this address' }),
+        explain(
+          window.location.protocol === 'file:'
+            ? 'You opened the draft board as a file on this computer, which has no web address ' +
+              'other people can reach. Viewer links need the hosted version.'
+            : 'You are running the draft board on this laptop only, so a link to it would just ' +
+              'point at each guest’s own phone. Viewer links need the hosted version.'
+        ),
+        explain(
+          'Your draft is completely fine here — this only affects sharing. Open the same draft ' +
+            'from the hosted address to hand out links.'
+        )
+      );
+      return;
+    }
+
+    if (!scriptUrl) {
+      body.append(
+        el('h3', { text: 'Not set up yet' }),
+        explain(
+          'Sharing reads the draft out of your Google Sheet, so the sheet backup has to be ' +
+            'working first. There is no spreadsheet connected to this draft.'
+        )
+      );
+      return;
+    }
+
+    if (!viewToken) {
+      body.append(
+        el('h3', { text: 'Viewer links are off' }),
+        explain(
+          'To let people follow the draft on their phones, pick a second random word or phrase — ' +
+            'different from your access token — and do two things with it:'
+        ),
+        el('ol', { class: 'steps' }, [
+          el('li', { text: 'Put it in the “Viewer link token” box on the setup screen.' }),
+          el('li', {
+            text:
+              'Put the same value into VIEW_TOKEN at the top of Code.gs, then re-publish: ' +
+              'Deploy → Manage deployments → ✏️ → Version: New version → Deploy.',
+          }),
+        ]),
+        explain(
+          'That second step is the one people miss. Editing Code.gs changes nothing on its own — ' +
+            'a deployment is a frozen snapshot until you publish a new version of it.'
+        )
+      );
+      return;
+    }
+
+    if (viewToken === (prefs.token || '') && prefs.token) {
+      body.append(
+        el('h3', { text: 'These two tokens must differ' }),
+        explain(
+          'Your viewer token is the same as your access token, so the link would let anyone ' +
+            'who has it change the draft. Change one of them on the setup screen first.'
+        )
+      );
+      return;
+    }
+
+    const link = App.shareLink.build({
+      origin: window.location.origin + window.location.pathname.replace(/[^/]*$/, ''),
+      url: scriptUrl,
+      token: viewToken,
+      draftKey: state.draftKey,
+    });
+
+    const box = el('textarea', { class: 'copybox', readonly: true, rows: '4', text: link });
+    const status = el('div', { class: 'note-slot' });
+
+    body.append(
+      explain(
+        'Send this to the group chat. It opens a read-only page showing whoever taps it their ' +
+          'own roster, budget and max bid, updating on its own a few seconds behind the room.'
+      ),
+      box,
+      el('div', { class: 'btn-stack' }, [
+        el('button', {
+          class: 'btn btn--primary',
+          text: 'Copy link',
+          onclick: async () => {
+            try {
+              await navigator.clipboard.writeText(link);
+              clear(status).append(el('span', { class: 'note note--ok', text: 'Copied.' }));
+            } catch {
+              // Clipboard access is blocked on file:// and in some browsers;
+              // selecting the text is a fine fallback and needs no permission.
+              box.select();
+              clear(status).append(
+                el('span', { class: 'note note--info', text: 'Selected — press Ctrl/Cmd+C to copy.' })
+              );
+            }
+          },
+        }),
+        el('button', {
+          class: 'btn',
+          text: 'Open it myself',
+          onclick: () => window.open(link, '_blank', 'noopener'),
+        }),
+      ]),
+      status,
+      el('hr'),
+      el('h3', { text: 'What people can and cannot do' }),
+      el('ul', { class: 'steps' }, [
+        el('li', { text: 'See every team’s roster, spending and remaining budget. Nothing is hidden.' }),
+        el('li', { text: 'They cannot enter, edit or undo a pick — the page has no way to write at all.' }),
+        el('li', { text: 'Anyone the link is forwarded to can watch, so treat it as public to the party.' }),
+        el('li', {
+          text:
+            'It only works while both you and they have internet. If the wifi drops, your draft ' +
+            'keeps running here and their screens say they have stopped updating.',
+        }),
+      ])
     );
   }
 
@@ -273,6 +420,12 @@
         class: 'btn btn--ghost btn--sm',
         text: 'Picks',
         onclick: () => openPanel('history'),
+      }),
+      el('button', {
+        class: 'btn btn--ghost btn--sm',
+        text: 'Share',
+        title: 'Let people follow the draft on their phones',
+        onclick: () => openPanel('share'),
       }),
       el('button', {
         class: 'btn btn--ghost btn--sm',

@@ -155,6 +155,47 @@ version.
 
 </details>
 
+### Optional: let people follow along on their phones
+
+The big screen is for the room. This is for the person who just wants to check *their own* roster
+and budget without reading a TV from across the sofa.
+
+Turn it on and you get a link. Anyone who opens it sees a phone-shaped page: their team's roster
+with the empty spots still to fill, their remaining budget and max bid, who's nominating, the last
+few picks, and a table of everyone else. It updates on its own. **It cannot change the draft** —
+the page doesn't load any of the code that writes, so there is no "are you sure" to get wrong.
+
+Two things to know before you rely on it:
+
+- **It needs internet at both ends.** The phones read from your Google Sheet, so this is the one
+  feature that genuinely stops working if the venue's wifi dies. Your draft carries on regardless,
+  on the laptop, exactly as it would otherwise — and the phones say plainly that they've stopped
+  updating rather than quietly showing old numbers.
+- **It runs a few seconds behind the room** — usually 5–20. Fine for tracking a roster; not a
+  substitute for listening to the auctioneer.
+
+<details>
+<summary><b>Turning on viewer links (~2 minutes, after the sheet backup works)</b></summary>
+
+1. Make up a **second** random string — different from your access token. This one is the read-only
+   one, and it's the one you're about to show to a room full of people.
+2. Put it in the app's setup screen, in **Viewer link token**.
+3. Put the same value into `Code.gs`: `var VIEW_TOKEN = 'your-second-string';`
+4. **Re-publish the deployment**: Deploy → Manage deployments → ✏️ → **Version: New version** →
+   Deploy. Editing `Code.gs` on its own changes nothing — a deployment is a frozen snapshot. Use
+   *Manage deployments*, not *New deployment*, which would give you a different URL and break the
+   setup you already have.
+5. Start (or resume) the draft, then hit **Share** in the top bar and copy the link into your
+   league's group chat.
+
+Never put your access token in the viewer box. The app refuses to start a draft if the two match,
+because a viewer link built from the write token would let anyone who has it overwrite the draft.
+
+Anyone the link is forwarded to can watch, and everything is visible to everyone — there's nothing
+hidden per-team. Treat it as public to the party.
+
+</details>
+
 #### How drafts are kept apart
 
 Every draft gets a key when you start it: the date, the name you typed, and a short random
@@ -169,10 +210,13 @@ suffix — `2026-08-24 Kurtz League x9a2`. That key names the spreadsheet tabs a
 - **Restoring picks a draft.** *Backup → List drafts in the sheet* shows everything the spreadsheet
   holds and loads any of them onto this computer.
 - **The draft lives in the browser, not on the server.** Two people opening the same hosted URL do
-  *not* see the same board — each gets their own empty setup screen. There is no spectator view;
-  the room watches the operator's screen on the TV, which is the whole design.
+  *not* see the same board — each gets their own empty setup screen. The room watches the
+  operator's screen on the TV; that's still the design. The one exception is the read-only
+  [viewer link](#optional-let-people-follow-along-on-their-phones), which is a deliberate,
+  separately-tokened page and cannot enter a pick.
 - **The access token is what stops strangers writing** to your sheet if they find the web app
-  URL. Set it in both `Code.gs` and the setup screen.
+  URL. Set it in both `Code.gs` and the setup screen. The viewer token is a *second*, different
+  string — it can only read.
 
 The only remaining way two drafts can collide is if they somehow share a key, and the app refuses
 that write rather than replacing anything — taking over is a deliberate click.
@@ -216,6 +260,10 @@ On the actual laptop, actual browser, actual TV:
 - [ ] Turn the wifi **off** and keep entering picks. Everything should still work.
 - [ ] Reload the page mid-draft. It should offer to resume and come back exactly as it was.
 - [ ] If you set up the sheet: turn wifi back on and watch the status pill go green.
+- [ ] If you're using viewer links: open one **on a phone, on cellular data** — not the venue wifi,
+      which would hide a whole class of problem. Check you can pick your team and see your roster,
+      then enter a pick on the laptop and watch the phone follow within ~20 seconds. Then put the
+      phone to sleep for two minutes and confirm it catches up when you wake it.
 - [ ] Click Export and check the roster list looks right.
 - [ ] Laptop set to never sleep, and plugged in.
 - [ ] The week of the draft, refresh the player list and rebuild the standalone file:
@@ -298,6 +346,8 @@ can't fight over the same draft. Use the one you've been typing into, or click "
 ```
 apps-script/    Code.gs — paste this into the spreadsheet; the only server-side code there is
 public/         The whole frontend: plain HTML/CSS/JS, no build step, no dependencies
+  index.html    The operator's draft board — the app
+  view.html     The read-only viewer guests open on their phones
   js/schema.js  How draft state maps onto spreadsheet rows, both directions
 scripts/        Player-list builder and the test suites
 server.js       Zero-dependency static file server for an http:// origin
@@ -316,9 +366,21 @@ is why the standalone HTML file can back up to a sheet with nothing running behi
   rewrite is padded to a fixed size so a deleted pick can't leave a stale row behind.
 - **A `revision` counter guards against stale writes** clobbering newer data; the append-only `Log`
   tab keeps an audit trail regardless.
-- **`Code.gs` knows nothing about auctions.** It writes the rows it is handed and enforces exactly
-  two guards — refuse a different draft, refuse an older revision. Everything else lives in
-  `public/js/schema.js`, which is testable outside Google; Apps Script code is not.
+- **`Code.gs` knows nothing about auctions.** It writes the rows it is handed and enforces three
+  guards — refuse a different draft, refuse an older revision, and refuse an op the caller's token
+  isn't entitled to. Everything else lives in `public/js/schema.js`, which is testable outside
+  Google; Apps Script code is not.
+- **The viewer is read-only by construction, not by flag.** `view.html` never loads `sync.js`, the
+  session lock, or `persistence.save`, so there is no code path on that page that can write. The
+  `store.setReadOnly(true)` call there is a second layer, not the mechanism. If you add a shared
+  view, keep it that way — a runtime check is something you have to remember to write.
+- **`health` is a write.** It stamps `Drafts!L1` to prove the round trip works. It is grouped with
+  `sync` in `authorize_()` for that reason; do not let it drift into the read list.
+- **Viewers poll cheaply and fetch rarely.** `poll` returns a revision from a handful of cells;
+  `load` returns the whole draft. Fetching on every poll would multiply a 40KB read by every phone
+  in the room, so `test-viewer.mjs` pins "unchanged revision issues no load". The full fetch is
+  also randomly delayed — every phone sees the same revision bump at once, so jittering only the
+  poll would still have them all fetch together right after each pick.
 - **All validation is client-side.** A rejection arriving mid-draft would be unactionable and would
   let the sheet disagree with the screen.
 - **Requests to Apps Script must stay "simple".** `Content-Type: text/plain`, no custom headers —
@@ -326,9 +388,11 @@ is why the standalone HTML file can back up to a sheet with nothing running behi
   request dies before Google sees it.
 
 ```bash
+npm test                                                # everything below that runs in milliseconds
 node scripts/test.mjs                                   # draft rules, budgets, sheet mapping
 node scripts/test-restore.mjs                           # the compare/restore recovery paths
 node scripts/test-apps-script.mjs                       # runs apps-script/Code.gs against a fake sheet
+node scripts/test-viewer.mjs                            # the viewer's poll loop and the share link
 node server.js &                                        # then, in another shell:
 node --experimental-websocket scripts/browser-test.mjs  # drives the real UI in headless Chrome
 node --experimental-websocket scripts/offline-test.mjs  # drives the standalone file over file://
@@ -343,9 +407,10 @@ node scripts/build-offline.mjs                          # rebuild DraftBoard-off
 the real UI and then reconciles four independent copies of the truth — what was entered, the app's
 state, localStorage, and the sheet — plus every export. They cover the standalone file with no
 server at all, the local server writing to a sheet, a network outage across a third of the draft, a
-crash-and-reload mid-draft, the standalone file backing up to a sheet from `file://`, and a second
-window being unable to clobber the draft. Run them after touching state, sync, or persistence; they
-found a real sync-starvation bug that none of the unit tests could see.
+crash-and-reload mid-draft, the standalone file backing up to a sheet from `file://`, a second
+window being unable to clobber the draft, and a guest's phone following along read-only. Run them
+after touching state, sync, or persistence; they found a real sync-starvation bug that none of the
+unit tests could see.
 
 `test-apps-script.mjs` loads `apps-script/Code.gs` from disk and runs it unmodified against a fake
 `SpreadsheetApp`, so a bug in the file the operator pastes into their sheet is a failing test here.

@@ -20,6 +20,14 @@
 // being able to write to this spreadsheet.
 var WRITE_TOKEN = '';
 
+// A SECOND, different random string, for the read-only viewer link handed out to
+// people at the draft. It can read the draft and nothing else. Leave it empty to
+// turn viewer mode off entirely.
+//
+// Never put WRITE_TOKEN here. The whole point is that a guest holding this one
+// cannot change the draft.
+var VIEW_TOKEN = '';
+
 var INDEX_TAB = 'Drafts';
 var LOCK_WAIT_MS = 20000;
 
@@ -41,11 +49,33 @@ function statusOf(payload) {
   return ERROR_STATUS[payload.error && payload.error.code] || 500;
 }
 
+/**
+ * Who may run what.
+ *
+ * Two things here are load-bearing and easy to get wrong:
+ *
+ * 1. Every comparison is guarded by the token being non-empty first. Without
+ *    that, an unset VIEW_TOKEN ('') would match a caller who sends token: '',
+ *    which would quietly open `load` -- the whole draft, backup JSON included --
+ *    to anyone who has the URL.
+ *
+ * 2. `health` is grouped with the writes, not the reads, because health_()
+ *    writes a timestamp into the Drafts tab. It reads like a read; it isn't.
+ *    A viewer has no use for it, and granting it would hand every guest a way
+ *    to write to this spreadsheet.
+ */
+function authorize_(op, token) {
+  if (!WRITE_TOKEN) return true;                          // open sheet: as before
+  if (token === WRITE_TOKEN) return true;                 // the operator: everything
+  if (op === 'sync' || op === 'health') return false;     // writes: never a viewer
+  return Boolean(VIEW_TOKEN) && token === VIEW_TOKEN;     // list / load / poll
+}
+
 function doPost(e) {
   try {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
 
-    if (WRITE_TOKEN && body.token !== WRITE_TOKEN) {
+    if (!authorize_(body.op, body.token)) {
       return reply(401, { ok: false, error: { code: 'unauthorized', message: 'Bad access token.' } });
     }
 
@@ -59,6 +89,7 @@ function doPost(e) {
         return reply(statusOf(out), out);
       case 'list': return reply(200, list_());
       case 'load': return reply(200, load_(body));
+      case 'poll': return reply(200, poll_(body));
       default:
         return reply(400, {
           ok: false,
@@ -195,6 +226,33 @@ function list_() {
 }
 
 /**
+ * "Has anything changed?" -- the cheap question, asked often.
+ *
+ * Viewer phones ask this every few seconds and only fall through to load_ when
+ * the revision moves. That difference is what makes viewer mode affordable:
+ * load_ reads three whole tabs and returns tens of kilobytes, while this reads
+ * twenty rows of two columns.
+ *
+ * Deliberately takes no lock. Reads must never be able to delay the operator's
+ * write, which is the only thing in here that actually matters.
+ */
+function poll_(body) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var head = configHead_(ss, body.draftKey);
+  return {
+    ok: true,
+    found: Boolean(head.draftId),
+    draftId: head.draftId,
+    revision: head.revision,
+    updatedAt: head.updatedAt,
+    // Not `status`: reply() puts the HTTP status code in that field, since Apps
+    // Script cannot set real headers. Naming this one `status` silently loses it.
+    draftStatus: head.status,
+    serverTime: new Date().toISOString()
+  };
+}
+
+/**
  * Raw rows for one draft. The browser turns these back into state with the
  * same rowsToState() the server uses, so both restore paths behave identically.
  */
@@ -272,7 +330,7 @@ function upsertIndex_(ss, row) {
  * knowledge the script needs, and it is two columns wide.
  */
 function configHead_(ss, draftKey) {
-  var head = { draftId: '', draftKey: '', revision: 0, updatedAt: '' };
+  var head = { draftId: '', draftKey: '', revision: 0, updatedAt: '', status: '' };
   var sheet = ss.getSheetByName(draftKey + ' Config');
   if (!sheet || sheet.getLastRow() === 0) return head;
   var rows = sheet.getRange(1, 1, Math.min(sheet.getLastRow(), 20), 2).getValues();
@@ -283,6 +341,9 @@ function configHead_(ss, draftKey) {
     else if (key === 'draftKey') head.draftKey = String(value || '');
     else if (key === 'revision') head.revision = Number(value) || 0;
     else if (key === 'updatedAt') head.updatedAt = String(value || '');
+    // Written by schema.js but never read back until poll_ needed it, so that
+    // a viewer can tell a finished draft from one still in progress.
+    else if (key === 'status') head.status = String(value || '');
     else if (key === 'Teams') break;
   }
   return head;

@@ -2717,6 +2717,84 @@ function reconstruct(cfg, pickRows) {
 (function (App) {
   'use strict';
 
+  // The viewer link: everything a guest's phone needs to read one draft, packed
+  // into a URL that can be pasted into a group chat.
+  //
+  // Three things travel: the Apps Script deployment URL, the read-only token,
+  // and which draft to show. There is no server to hold any of it -- the app is
+  // static -- so the link is the only place it can live.
+  //
+  // It goes in the hash fragment rather than the query string because fragments
+  // are never sent to the server, so the token stays out of Vercel's request
+  // logs and out of any proxy in between.
+
+  const PREFIX = '#v1.';
+
+  /**
+   * btoa() throws on anything outside Latin-1, and a draft key can easily carry
+   * a character that is: draftKey() strips only : \ / ? * [ ] ' " , so a league
+   * called "Café" or one with an emoji in the name flows straight through. So
+   * encode to UTF-8 bytes first and base64 those.
+   */
+  function toBase64Url(text) {
+    const bytes = new TextEncoder().encode(text);
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function fromBase64Url(encoded) {
+    const padded = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
+    const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+
+  App.shareLink = {
+    /**
+     * @returns the fragment alone, e.g. "#v1.eyJ1Ijoi...". Callers join it to
+     *   whatever origin they are serving from.
+     */
+    encode({ url, token, draftKey }) {
+      return PREFIX + toBase64Url(JSON.stringify({ u: url || '', t: token || '', k: draftKey || '' }));
+    },
+
+    /** Builds the whole link a guest opens. */
+    build({ origin, url, token, draftKey }) {
+      const base = String(origin || '').replace(/\/(index\.html)?$/, '');
+      return `${base}/view.html${App.shareLink.encode({ url, token, draftKey })}`;
+    },
+
+    /**
+     * @returns {{url, token, draftKey}} or null if there is nothing usable here.
+     *   Never throws: a mangled link (truncated by a chat client, hand-edited)
+     *   has to land on the viewer's "this link doesn't work" screen, not on an
+     *   uncaught exception that leaves a guest staring at a blank page.
+     */
+    decode(hash) {
+      const raw = String(hash || '');
+      if (!raw.startsWith(PREFIX)) return null;
+      try {
+        const parsed = JSON.parse(fromBase64Url(raw.slice(PREFIX.length)));
+        if (!parsed || typeof parsed !== 'object') return null;
+        const out = {
+          url: String(parsed.u || ''),
+          token: String(parsed.t || ''),
+          draftKey: String(parsed.k || ''),
+        };
+        return out.url && out.draftKey ? out : null;
+      } catch {
+        return null;
+      }
+    },
+  };
+})(window.DraftApp);
+
+</script>
+    <script>
+(function (App) {
+  'use strict';
+
   // Talks to the Google Apps Script web app deployed inside the operator's own
   // spreadsheet. That script runs as whoever deployed it, so there is no
   // service account, no key file, and no Google Cloud project anywhere.
@@ -2851,6 +2929,15 @@ function reconstruct(cfg, pickRows) {
       const res = await call({ op: 'list' });
       if (res.status !== 200) return res;
       return result(200, { ok: true, drafts: App.schema.parseIndex(res.data.rows || []) });
+    },
+
+    /**
+     * "Has anything changed?" -- a few cells, not the whole draft. Viewer phones
+     * ask this constantly and only fall through to load() when the revision
+     * moves, which is the only reason polling is affordable.
+     */
+    poll(draftKey) {
+      return call({ op: 'poll', draftKey });
     },
 
     async load(draftKey) {
@@ -3519,14 +3606,23 @@ function reconstruct(cfg, pickRows) {
         }),
       ]);
 
+      const viewTokenInput = el('input', {
+        type: 'text',
+        id: 'view-token',
+        placeholder: 'Leave blank to keep the draft private',
+        value: App.persistence.prefs().viewToken || '',
+      });
+
       function applySheetSettings() {
         App.sync.configure({
           appsScriptUrl: scriptUrlInput.value.trim(),
           token: tokenInput.value.trim(),
         });
+        App.persistence.setPref('viewToken', viewTokenInput.value.trim());
       }
       scriptUrlInput.addEventListener('change', applySheetSettings);
       tokenInput.addEventListener('change', applySheetSettings);
+      viewTokenInput.addEventListener('change', applySheetSettings);
       applySheetSettings();
       const usernameInput = el('input', { type: 'text', id: 'sleeper-user', placeholder: 'Sleeper username' });
       const leagueInput = el('input', { type: 'text', id: 'sleeper-league', placeholder: 'or paste a league ID' });
@@ -3724,6 +3820,19 @@ function reconstruct(cfg, pickRows) {
               el('label', { for: 'token', text: 'Access token' }),
               tokenInput,
             ]),
+            el('div', { class: 'field' }, [
+              el('label', { for: 'view-token', text: 'Viewer link token' }),
+              viewTokenInput,
+              el('p', {
+                class: 'muted small',
+                text:
+                  'Optional, and must be DIFFERENT from the access token above. It lets you share ' +
+                  'a link so people can follow their own roster on their phones — read-only, they ' +
+                  'cannot change the draft. Paste the same value into VIEW_TOKEN in Code.gs, then ' +
+                  're-publish: Deploy → Manage deployments → ✏️ → Version: New version → Deploy. ' +
+                  '(“New deployment” would give you a different URL and break this setup.)',
+              }),
+            ]),
             el('div', { class: 'field-row' }, [
               el('button', {
                 type: 'button',
@@ -3771,7 +3880,19 @@ function reconstruct(cfg, pickRows) {
                   return;
                 }
                 const tokenValue = tokenInput.value.trim();
+                const viewTokenValue = viewTokenInput.value.trim();
+                // Pasting the write token into the viewer box would hand every
+                // guest the ability to overwrite the draft -- the exact thing
+                // the second token exists to prevent.
+                if (viewTokenValue && viewTokenValue === tokenValue) {
+                  window.alert(
+                    'The viewer link token must be different from the access token. ' +
+                      'Anyone you share the link with would otherwise be able to change the draft.'
+                  );
+                  return;
+                }
                 App.persistence.setPref('token', tokenValue);
+                App.persistence.setPref('viewToken', viewTokenValue);
                 App.persistence.setPref('appsScriptUrl', scriptUrlInput.value.trim());
                 App.sync.configure({
                   token: tokenValue,
@@ -4488,6 +4609,9 @@ function reconstruct(cfg, pickRows) {
     if (kind === 'history') {
       title.textContent = 'All picks';
       App.views.history.render(body);
+    } else if (kind === 'share') {
+      title.textContent = 'Share with the room';
+      renderSharePanel(body);
     } else if (kind === 'export') {
       title.textContent = 'Save & export';
       renderExportPanel(body);
@@ -4533,6 +4657,121 @@ function reconstruct(cfg, pickRows) {
       ]),
       el('h3', { text: 'Copy & paste' }),
       el('textarea', { class: 'copybox', readonly: true, rows: '18', text: App.exporter.rostersText() })
+    );
+  }
+
+  /**
+   * The viewer link. Everything a guest's phone needs travels in the URL,
+   * because there is no server to hold it -- so this panel is the only place
+   * that link can come from.
+   */
+  function renderSharePanel(body) {
+    clear(body);
+    const prefs = persistence.prefs();
+    const scriptUrl = prefs.appsScriptUrl || '';
+    const viewToken = prefs.viewToken || '';
+    const state = store.get();
+
+    const explain = (text) => el('p', { class: 'muted', text });
+
+    if (!scriptUrl) {
+      body.append(
+        el('h3', { text: 'Not set up yet' }),
+        explain(
+          'Sharing reads the draft out of your Google Sheet, so the sheet backup has to be ' +
+            'working first. There is no spreadsheet connected to this draft.'
+        )
+      );
+      return;
+    }
+
+    if (!viewToken) {
+      body.append(
+        el('h3', { text: 'Viewer links are off' }),
+        explain(
+          'To let people follow the draft on their phones, pick a second random word or phrase — ' +
+            'different from your access token — and do two things with it:'
+        ),
+        el('ol', { class: 'steps' }, [
+          el('li', { text: 'Put it in the “Viewer link token” box on the setup screen.' }),
+          el('li', {
+            text:
+              'Put the same value into VIEW_TOKEN at the top of Code.gs, then re-publish: ' +
+              'Deploy → Manage deployments → ✏️ → Version: New version → Deploy.',
+          }),
+        ]),
+        explain(
+          'That second step is the one people miss. Editing Code.gs changes nothing on its own — ' +
+            'a deployment is a frozen snapshot until you publish a new version of it.'
+        )
+      );
+      return;
+    }
+
+    if (viewToken === (prefs.token || '') && prefs.token) {
+      body.append(
+        el('h3', { text: 'These two tokens must differ' }),
+        explain(
+          'Your viewer token is the same as your access token, so the link would let anyone ' +
+            'who has it change the draft. Change one of them on the setup screen first.'
+        )
+      );
+      return;
+    }
+
+    const link = App.shareLink.build({
+      origin: window.location.origin + window.location.pathname.replace(/[^/]*$/, ''),
+      url: scriptUrl,
+      token: viewToken,
+      draftKey: state.draftKey,
+    });
+
+    const box = el('textarea', { class: 'copybox', readonly: true, rows: '4', text: link });
+    const status = el('div', { class: 'note-slot' });
+
+    body.append(
+      explain(
+        'Send this to the group chat. It opens a read-only page showing whoever taps it their ' +
+          'own roster, budget and max bid, updating on its own a few seconds behind the room.'
+      ),
+      box,
+      el('div', { class: 'btn-stack' }, [
+        el('button', {
+          class: 'btn btn--primary',
+          text: 'Copy link',
+          onclick: async () => {
+            try {
+              await navigator.clipboard.writeText(link);
+              clear(status).append(el('span', { class: 'note note--ok', text: 'Copied.' }));
+            } catch {
+              // Clipboard access is blocked on file:// and in some browsers;
+              // selecting the text is a fine fallback and needs no permission.
+              box.select();
+              clear(status).append(
+                el('span', { class: 'note note--info', text: 'Selected — press Ctrl/Cmd+C to copy.' })
+              );
+            }
+          },
+        }),
+        el('button', {
+          class: 'btn',
+          text: 'Open it myself',
+          onclick: () => window.open(link, '_blank', 'noopener'),
+        }),
+      ]),
+      status,
+      el('hr'),
+      el('h3', { text: 'What people can and cannot do' }),
+      el('ul', { class: 'steps' }, [
+        el('li', { text: 'See every team’s roster, spending and remaining budget. Nothing is hidden.' }),
+        el('li', { text: 'They cannot enter, edit or undo a pick — the page has no way to write at all.' }),
+        el('li', { text: 'Anyone the link is forwarded to can watch, so treat it as public to the party.' }),
+        el('li', {
+          text:
+            'It only works while both you and they have internet. If the wifi drops, your draft ' +
+            'keeps running here and their screens say they have stopped updating.',
+        }),
+      ])
     );
   }
 
@@ -4704,6 +4943,12 @@ function reconstruct(cfg, pickRows) {
         class: 'btn btn--ghost btn--sm',
         text: 'Picks',
         onclick: () => openPanel('history'),
+      }),
+      el('button', {
+        class: 'btn btn--ghost btn--sm',
+        text: 'Share',
+        title: 'Let people follow the draft on their phones',
+        onclick: () => openPanel('share'),
       }),
       el('button', {
         class: 'btn btn--ghost btn--sm',

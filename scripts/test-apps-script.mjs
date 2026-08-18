@@ -309,5 +309,137 @@ test('an apostrophe in a tab name is quoted, not left to split the range', () =>
   assert.equal(App.schema.quoteTab("a'b"), "'a''b'");
 });
 
+console.log('\nThe viewer token can read the draft and nothing else');
+
+// Viewer mode hands a token to everyone at the party. These tests are the whole
+// reason that is safe to do, so they check the sheet is untouched afterwards
+// rather than trusting the status code alone -- a 401 that still wrote would
+// pass a weaker test.
+
+/** A script with both tokens set, holding one synced draft. */
+function withTokens() {
+  const script = loadAppsScript({ writeToken: 'operator-secret', viewToken: 'guest-secret' });
+  const state = draft({ picks: 3, revision: 5 });
+  const res = script.post({ ...syncPayload(state), token: 'operator-secret' });
+  assert.equal(res.ok, true, 'setup sync should succeed');
+  return { ...script, state };
+}
+
+test('the viewer token cannot sync', () => {
+  const { post, spreadsheet, state } = withTokens();
+  const before = JSON.stringify(spreadsheet.getSheetByName(`${state.draftKey} Picks`).getDataRange().getValues());
+
+  const res = post({ ...syncPayload(draft({ picks: 1, revision: 99 })), token: 'guest-secret' });
+
+  assert.equal(res.status, 401, 'a guest must never be able to write the draft');
+  const after = JSON.stringify(spreadsheet.getSheetByName(`${state.draftKey} Picks`).getDataRange().getValues());
+  assert.equal(after, before, 'the refused sync must change nothing at all');
+});
+
+test('the viewer token cannot force past the guards either', () => {
+  const { post, spreadsheet, state } = withTokens();
+  const before = JSON.stringify(spreadsheet.getSheetByName(`${state.draftKey} Picks`).getDataRange().getValues());
+  const res = post({ ...syncPayload(draft({ picks: 1, revision: 1 })), force: true, token: 'guest-secret' });
+  assert.equal(res.status, 401, 'force must not be a way around the token check');
+  const after = JSON.stringify(spreadsheet.getSheetByName(`${state.draftKey} Picks`).getDataRange().getValues());
+  assert.equal(after, before);
+});
+
+test('the viewer token cannot call health, which writes despite its name', () => {
+  // health_() stamps Drafts!L1 on every call. It reads like a read; it isn't.
+  const { post, spreadsheet } = withTokens();
+  const cell = () => spreadsheet.getSheetByName('Drafts').getRange('L1').getValue();
+  const before = cell();
+
+  assert.equal(post({ op: 'health', token: 'guest-secret' }).status, 401);
+  assert.equal(cell(), before, 'a refused health check must not have written');
+});
+
+test('the viewer token can poll, load and list', () => {
+  const { post, state } = withTokens();
+  assert.equal(post({ op: 'poll', draftKey: state.draftKey, token: 'guest-secret' }).ok, true);
+  assert.equal(post({ op: 'load', draftKey: state.draftKey, token: 'guest-secret' }).ok, true);
+  assert.equal(post({ op: 'list', token: 'guest-secret' }).ok, true);
+});
+
+test('the operator token still does everything', () => {
+  const { post, state } = withTokens();
+  assert.equal(post({ op: 'health', token: 'operator-secret' }).status, 200);
+  assert.equal(post({ op: 'poll', draftKey: state.draftKey, token: 'operator-secret' }).ok, true);
+  assert.equal(post({ op: 'load', draftKey: state.draftKey, token: 'operator-secret' }).ok, true);
+  assert.equal(
+    post({ ...syncPayload(draft({ picks: 3, revision: 6 })), token: 'operator-secret' }).ok,
+    true
+  );
+});
+
+test('an empty token is refused when viewer mode is off', () => {
+  // The bug this is shaped to prevent: `token === VIEW_TOKEN` with VIEW_TOKEN
+  // unset ('') matches a caller sending token: '', which would open the whole
+  // draft -- backup JSON included -- to anyone holding the URL.
+  const { post } = loadAppsScript({ writeToken: 'operator-secret' });
+  assert.equal(post({ op: 'load', draftKey: 'anything', token: '' }).status, 401);
+  assert.equal(post({ op: 'poll', draftKey: 'anything', token: '' }).status, 401);
+  assert.equal(post({ op: 'list', token: '' }).status, 401);
+});
+
+test('a missing token is refused when viewer mode is off', () => {
+  const { post } = loadAppsScript({ writeToken: 'operator-secret' });
+  assert.equal(post({ op: 'load', draftKey: 'anything' }).status, 401);
+  assert.equal(post({ op: 'poll', draftKey: 'anything' }).status, 401);
+});
+
+test('a wrong viewer token is refused', () => {
+  const { post, state } = withTokens();
+  assert.equal(post({ op: 'load', draftKey: state.draftKey, token: 'guessed' }).status, 401);
+});
+
+test('an unset write token still means an open sheet', () => {
+  // Preserving today's behaviour: someone running without any token at all is
+  // not broken by viewer mode existing.
+  const { post } = loadAppsScript();
+  assert.equal(post({ op: 'health' }).status, 200);
+  assert.equal(post({ op: 'list' }).ok, true);
+  assert.equal(post({ op: 'poll', draftKey: 'nothing here' }).ok, true);
+});
+
+console.log('\nPolling is the cheap question');
+
+test('poll reports the revision the last sync wrote', () => {
+  const { post, state } = withTokens();
+  const res = post({ op: 'poll', draftKey: state.draftKey, token: 'guest-secret' });
+  assert.equal(res.found, true);
+  assert.equal(res.revision, 5);
+  assert.equal(res.draftId, state.draftId);
+  // Deliberately not `status`: reply() overwrites that with the HTTP code.
+  assert.equal(res.draftStatus, 'drafting', 'poll must report the draft status, which configHead_ had to learn to read');
+  assert.equal(res.status, 200, 'and the envelope keeps carrying the HTTP code');
+});
+
+test('poll follows the revision as the draft moves', () => {
+  const { post, state } = withTokens();
+  post({ ...syncPayload(draft({ picks: 3, revision: 12 })), token: 'operator-secret' });
+  assert.equal(post({ op: 'poll', draftKey: state.draftKey, token: 'guest-secret' }).revision, 12);
+});
+
+test('poll on a draft the sheet has never held says so rather than failing', () => {
+  const { post } = withTokens();
+  const res = post({ op: 'poll', draftKey: '2099-01-01 Ghost zzzz', token: 'guest-secret' });
+  assert.equal(res.ok, true);
+  assert.equal(res.found, false, 'this is what tells a viewer its link is stale');
+  assert.equal(res.revision, 0);
+});
+
+test('poll never takes the lock, so it cannot delay the operator', () => {
+  // sync_ holds the script lock for the length of a write. If poll_ took it too,
+  // a dozen phones would serialise against every pick the operator enters.
+  const source = readFileSync(join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
+  const pollBody = source.slice(source.indexOf('function poll_('), source.indexOf('function load_('));
+  assert.ok(pollBody.length > 0, 'poll_ should exist');
+  assert.ok(!/LockService/.test(pollBody), 'poll_ must not take the script lock');
+  const loadBody = source.slice(source.indexOf('function load_('), source.indexOf('// --- sheet helpers'));
+  assert.ok(!/LockService/.test(loadBody), 'load_ must not take the script lock');
+});
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 process.exit(failed ? 1 : 0);

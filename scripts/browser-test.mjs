@@ -390,6 +390,20 @@ async function main() {
       await sleep(100);
     }
 
+    // Share is the one panel whose answer depends on where the app is served
+    // from. On localhost a link would point at each guest's own phone, so it
+    // must say so rather than hand over something that fails in their hands.
+    await evaluate(`[...document.querySelectorAll('#topbar-actions .btn')].find(b => b.textContent === 'Share').click()`);
+    await sleep(200);
+    const shareText = await evaluate(`document.getElementById('panel-body').innerText`);
+    check(
+      'Share panel refuses to hand out a localhost link',
+      /Not from this address/i.test(shareText) && !/view\.html#/.test(shareText),
+      shareText.slice(0, 120)
+    );
+    await evaluate(`document.getElementById('panel-close').click()`);
+    await sleep(100);
+
     console.log('\nConsole health');
     check('no uncaught page errors', pageErrors.length === 0, pageErrors.join('\n       '));
     check('no console errors', consoleErrors.length === 0, consoleErrors.join('\n       '));

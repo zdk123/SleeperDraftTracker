@@ -500,11 +500,13 @@ function firstDiff(a, b) {
  * Point the app at a spreadsheet before the draft starts, the way the operator
  * does: type into the setup fields and let the change handlers apply them.
  */
-async function configureSheet(browser, url, token = '') {
+async function configureSheet(browser, url, token = '', viewToken = '') {
   await browser.eval(`(() => {
     const set = (el, v) => { el.value = v; el.dispatchEvent(new Event('change', {bubbles:true})); };
     set(document.getElementById('apps-script-url'), ${JSON.stringify(url)});
     set(document.getElementById('token'), ${JSON.stringify(token)});
+    const view = document.getElementById('view-token');
+    if (view) set(view, ${JSON.stringify(viewToken)});
   })()`);
 }
 
@@ -927,6 +929,176 @@ async function scenarioTwoWindows() {
   }
 }
 
+/**
+ * G. A guest follows the draft on their phone.
+ *
+ * The viewer is a second page on the same origin talking to the same
+ * spreadsheet, so this checks the two things that make it worth having and the
+ * one thing that makes it safe: that it converges on what the room sees, that
+ * it costs cheap polls rather than constant full fetches, and that it cannot
+ * write to the draft through any path at all.
+ */
+async function scenarioViewerFollowsAlong() {
+  const name = 'G. A guest follows the draft read-only';
+  console.log(`\n${name}`);
+  await assertPortFree(8794, 'scenario G');
+  const script = await startFakeAppsScript({ writeToken: 'operator-secret', viewToken: 'guest-secret' });
+  const app = startAppServer(8794);
+  await waitForServer(8794, 'app server');
+
+  const browser = new Browser();
+  await browser.launch(9407);
+  let phone = null;
+  try {
+    await browser.goto('http://localhost:8794/');
+    await browser.waitFor('document.querySelectorAll(".team-row").length > 0', 'setup screen');
+    await configureSheet(browser, script.url, 'operator-secret', 'guest-secret');
+    await setupDraft(browser);
+
+    const first = await runFullDraftPartial(browser, 40, 91);
+    console.log(`    (operator entered ${first.length} picks)`);
+    await settleSync(browser);
+
+    // The link the operator would paste into the group chat, built by the same
+    // code the Share panel uses.
+    const link = await browser.eval(`DraftApp.shareLink.build({
+      origin: location.origin + '/',
+      url: DraftApp.persistence.prefs().appsScriptUrl,
+      token: DraftApp.persistence.prefs().viewToken,
+      draftKey: DraftApp.store.get().draftKey,
+    })`);
+    check(name, 'the share link points at the viewer page',
+      link.includes('/view.html#v1.'), link.slice(0, 60));
+    check(name, 'and carries no secret in the query string',
+      !link.slice(0, link.indexOf('#')).includes('guest-secret'));
+
+    phone = await browser.openSecondTab(link);
+    await phone.waitFor('!!(window.DraftApp && DraftApp.store.exists())', 'the viewer to load the draft');
+
+    check(name, 'the viewer knows it is read-only',
+      (await phone.eval('DraftApp.store.isReadOnly()')) === true);
+
+    // Pick a team the way a guest would: tap their name.
+    await phone.waitFor('document.querySelectorAll(".vpick__team").length > 0', 'the team picker');
+    const myTeam = await phone.eval(`(() => {
+      const btn = document.querySelectorAll('.vpick__team')[2];
+      btn.click();
+      return btn.textContent;
+    })()`);
+    await sleep(300);
+
+    const rosterShown = await phone.eval('document.querySelectorAll(".roster__row").length');
+    check(name, 'the guest sees their whole roster, empty spots included',
+      rosterShown === SPOTS_PER_TEAM, `${rosterShown} rows for ${SPOTS_PER_TEAM} spots`);
+
+    // The numbers on the phone must be the numbers on the big board.
+    const agree = async (label) => {
+      const teamOf = (js) => `(() => {
+        const s = DraftApp.store;
+        const t = s.get().teams.find(t => t.name === ${JSON.stringify(myTeam)});
+        return JSON.stringify(${js});
+      })()`;
+      const board = JSON.parse(await browser.eval(teamOf('s.teamSummary(t.id)')));
+      const screen = JSON.parse(await phone.eval(teamOf('s.teamSummary(t.id)')));
+      check(name, `the phone matches the board ${label}`,
+        board.spent === screen.spent && board.remaining === screen.remaining &&
+          board.filled === screen.filled && board.maxBid === screen.maxBid,
+        `board ${JSON.stringify(board)} vs phone ${JSON.stringify(screen)}`);
+    };
+    await agree('after the first 40 picks');
+
+    // Every write path, from the page that is supposed to have none.
+    const beforeOperator = await browser.eval('DraftApp.store.get().picks.length');
+    const blocked = JSON.parse(await phone.eval(`(() => {
+      const s = DraftApp.store;
+      const p = s.get().picks[0];
+      return JSON.stringify({
+        add: s.addPick({ playerId: 'zz', playerName: 'Gatecrasher', position: 'QB',
+                         teamId: s.get().teams[0].id, price: 1, slot: 'QB' }),
+        edit: s.updatePick(p.id, { price: 999 }),
+        remove: s.removePick(p.id),
+        undo: s.undoLast(),
+        settings: s.updateSettings({ budgetPerTeam: 5 }),
+        hasSync: !!window.DraftApp.sync,
+        // Both pages share an origin, so this key holds the OPERATOR's draft.
+        // The point is that the viewer leaves it exactly as it found it.
+        saved: JSON.parse(localStorage.getItem('sleeperDraftTracker.state.v1') || 'null'),
+      });
+    })()`));
+    check(name, 'every write from the phone is refused',
+      blocked.add === null && blocked.edit === null && blocked.remove === null && blocked.undo === null,
+      JSON.stringify(blocked));
+    check(name, 'the viewer page never loaded the sync engine at all', blocked.hasSync === false);
+    check(name, 'the operator’s saved draft is left exactly as it was',
+      blocked.saved && blocked.saved.picks.length === beforeOperator &&
+        !blocked.saved.picks.some((p) => p.playerName === 'Gatecrasher') &&
+        blocked.saved.settings.budgetPerTeam !== 5,
+      blocked.saved ? `${blocked.saved.picks.length} picks vs ${beforeOperator}` : 'nothing saved');
+
+    const writeAttempts = script.requests.filter((op) => op === 'sync').length;
+
+    // The rest of the draft, with the phone watching.
+    const rest = await runFullDraft(browser, { seed: 31 });
+    const all = first.concat(rest);
+    console.log(`    (operator finished at ${all.length} picks)`);
+    await settleSync(browser);
+
+    check(name, 'the operator’s draft is untouched by the viewer',
+      all.length > beforeOperator && !all.some((p) => p.playerName === 'Gatecrasher'));
+
+    // Let the phone catch up the way it would on its own.
+    for (let i = 0; i < 12; i += 1) {
+      // An async IIFE, not a bare `await`: CDP only allows top-level await in
+      // repl mode, which this harness does not use.
+      const res = JSON.parse(
+        await phone.eval('(async () => JSON.stringify(await DraftApp.viewer.tick()))()')
+      );
+      if (res.action === 'unchanged') break;
+      await sleep(150);
+    }
+
+    const phonePicks = await phone.eval('DraftApp.store.get().picks.length');
+    check(name, 'the phone converges on the finished draft',
+      phonePicks === all.length, `${phonePicks} on the phone vs ${all.length} entered`);
+    await agree('at the end of the draft');
+
+    const polls = script.requests.filter((op) => op === 'poll').length;
+    const loads = script.requests.filter((op) => op === 'load').length;
+    const watched = all.length - first.length;
+    console.log(`    (${watched} picks entered while watching: ${polls} cheap polls, ${loads} full fetches)`);
+    // The design claim is that the phone does not fetch the whole draft once
+    // per pick. This simulation enters picks as fast as Chrome allows, so it is
+    // a harsher test than a real room, where picks are minutes apart.
+    check(name, 'the phone does not refetch the draft once per pick',
+      loads < watched / 2, `${loads} fetches for ${watched} picks`);
+    // The guardrail that actually matters, exercised end to end: a guest who
+    // reads their token out of the link and posts a sync with it, through a
+    // real browser and real CORS, must be refused by the script itself.
+    const sheetBefore = JSON.stringify([...appsScriptSheetView(script.spreadsheet).values]);
+    const forged = JSON.parse(await phone.eval(`(async () => {
+      const link = DraftApp.shareLink.decode(location.hash);
+      const res = await DraftApp.backend.push(DraftApp.store.get(), { force: true, summary: 'forged' });
+      return JSON.stringify({ token: link.token, status: res.status, code: res.data.error && res.data.error.code });
+    })()`));
+    check(name, 'the script refuses a write signed with the guest token',
+      forged.status === 401 && forged.code === 'unauthorized',
+      JSON.stringify(forged));
+    check(name, 'and the guest really was holding the viewer token',
+      forged.token === 'guest-secret', forged.token);
+
+    const sheetAfter = JSON.stringify([...appsScriptSheetView(script.spreadsheet).values]);
+    check(name, 'the forged write left the spreadsheet byte-identical',
+      sheetAfter === sheetBefore, 'a refused write must not have written anything at all');
+
+    await reconcile(name, browser, all, appsScriptSheetView(script.spreadsheet));
+  } finally {
+    if (phone) await phone.close();
+    await browser.close();
+    app.kill();
+    await script.close();
+  }
+}
+
 /** Same as runFullDraft but stops after `limit` picks. */
 async function runFullDraftPartial(browser, limit, seed) {
   const all = [];
@@ -996,12 +1168,13 @@ async function main() {
     d: scenarioCrashAndReload,
     e: scenarioStandaloneFileWithSheet,
     f: scenarioTwoWindows,
+    g: scenarioViewerFollowsAlong,
   };
 
   console.log(`Full-draft simulations — ${TEAMS.length} teams × ${SPOTS_PER_TEAM} spots = ${TOTAL_PICKS} picks each`);
 
   const toRun = only ? [scenarios[only.toLowerCase()]].filter(Boolean) : Object.values(scenarios);
-  if (!toRun.length) throw new Error(`Unknown scenario "${only}" (use a, b, c, d, e or f)`);
+  if (!toRun.length) throw new Error(`Unknown scenario "${only}" (use a, b, c, d, e, f or g)`);
 
   for (const scenario of toRun) await scenario();
 

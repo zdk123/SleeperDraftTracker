@@ -169,10 +169,29 @@ class FakeSpreadsheet {
 }
 
 /**
+ * Set one of Code.gs's top-level token vars, the way the operator does by hand.
+ *
+ * Throws rather than no-oping if the declaration isn't found. A silent miss here
+ * would leave both tokens empty, which Code.gs reads as "open sheet" -- and then
+ * every authorization test would pass without testing anything at all.
+ */
+function substituteVar(source, name, value) {
+  const pattern = new RegExp(`^var ${name} = '';$`, 'm');
+  if (!pattern.test(source)) {
+    throw new Error(
+      `Could not find "var ${name} = '';" in Code.gs. If it was renamed or given ` +
+        'a default, update fake-apps-script.mjs -- otherwise the auth tests silently ' +
+        'run against an open sheet.'
+    );
+  }
+  return source.replace(pattern, `var ${name} = ${JSON.stringify(value)};`);
+}
+
+/**
  * Evaluate Code.gs with fake Google globals. Returns its doPost/doGet plus the
  * spreadsheet they operate on.
  */
-export function loadAppsScript({ writeToken = '', spreadsheetName } = {}) {
+export function loadAppsScript({ writeToken = '', viewToken = '', spreadsheetName } = {}) {
   const spreadsheet = new FakeSpreadsheet(spreadsheetName);
   let locked = false;
 
@@ -202,8 +221,11 @@ export function loadAppsScript({ writeToken = '', spreadsheetName } = {}) {
   };
 
   let source = readFileSync(CODE_PATH, 'utf8');
-  // The operator pastes their token into the script; simulate that edit.
-  source = source.replace(/^var WRITE_TOKEN = '';$/m, `var WRITE_TOKEN = ${JSON.stringify(writeToken)};`);
+  // The operator pastes their tokens into the script; simulate those edits.
+  // Both must be substituted independently: the security tests turn on cases
+  // where one is set and the other is not.
+  source = substituteVar(source, 'WRITE_TOKEN', writeToken);
+  source = substituteVar(source, 'VIEW_TOKEN', viewToken);
 
   const factory = new Function(
     ...Object.keys(globals),
@@ -222,8 +244,8 @@ export function loadAppsScript({ writeToken = '', spreadsheetName } = {}) {
  * Serve the script over HTTP so a real browser can POST to it, exactly as it
  * would to a script.google.com deployment.
  */
-export async function startFakeAppsScript({ port = 0, writeToken = '' } = {}) {
-  const script = loadAppsScript({ writeToken });
+export async function startFakeAppsScript({ port = 0, writeToken = '', viewToken = '' } = {}) {
+  const script = loadAppsScript({ writeToken, viewToken });
   const requests = [];
 
   const state = { offline: false };

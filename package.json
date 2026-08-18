@@ -11,7 +11,7 @@
     "start": "node server.js",
     "players": "node scripts/build-players.mjs",
     "build": "node scripts/build-offline.mjs",
-    "test": "node scripts/test.mjs && node scripts/test-restore.mjs && node scripts/test-apps-script.mjs",
+    "test": "node scripts/test.mjs && node scripts/test-restore.mjs && node scripts/test-apps-script.mjs && node scripts/test-viewer.mjs",
     "test:browser": "node --experimental-websocket scripts/browser-test.mjs",
     "test:offline": "node --experimental-websocket scripts/offline-test.mjs",
     "simulate": "node --experimental-websocket scripts/simulate.mjs"
