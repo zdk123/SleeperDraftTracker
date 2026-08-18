@@ -198,6 +198,22 @@ hidden per-team. Treat it as public to the party.
 
 </details>
 
+#### Setting someone else's laptop up for them
+
+If the person running the draft isn't the person who made the spreadsheet, they'd otherwise have to
+hand-type a deployment URL and two long tokens on the night. Instead: fill the three boxes in on
+your own machine, then **Copy a setup link** (bottom of the *Google Sheet backup* card, and also in
+the **Backup** panel once a draft is running). Send it to them; they open it once and all three
+boxes are filled in.
+
+**That link contains your access token** — whoever opens it can save over the draft. Send it
+directly to the one person running the draft. Not to the league chat, and not in the same message
+as the viewer link. The app wipes it out of the address bar the moment it's applied, so it isn't
+left sitting on a screen that's being mirrored to a television.
+
+The same link is the fastest way to recover if the draft laptop dies: open it on the replacement,
+then *Backup → List drafts in the sheet* to pull the draft back down.
+
 #### How drafts are kept apart
 
 Every draft gets a key when you start it: the date, the name you typed, and a short random
@@ -385,6 +401,13 @@ is why the standalone HTML file can back up to a sheet with nothing running behi
   view, keep it that way — a runtime check is something you have to remember to write.
 - **`health` is a write.** It stamps `Drafts!L1` to prove the round trip works. It is grouped with
   `sync` in `authorize_()` for that reason; do not let it drift into the read list.
+- **There are two link types and they must never be confused.** `#v1.…` is the read-only viewer
+  link, meant for a room; `#s1.…` is the operator's setup link and carries the *write* token, meant
+  for one person. `shareLink.kindOf()` tells them apart, each decoder rejects the other's prefix,
+  and both live in the fragment so neither reaches a server log. A setup fragment is stripped from
+  the address bar as soon as it is applied — including when it fails to parse, since a mangled
+  setup link is still a leaked token. Note a fragment-only navigation does **not** reload the page,
+  so this is handled on `hashchange` as well as at boot.
 - **The share link is kept short because module count is scan distance.** Stripping the fixed
   `script.google.com/macros/s/…/exec` boilerplate saves 40 characters, which is the difference
   between a 61×61 QR and a 53×53 one — 15% bigger modules on the TV for the same area. The QR uses

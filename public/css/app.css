@@ -611,3 +611,11 @@ main {
     display: none !important;
   }
 }
+
+/* The setup link: a handoff control, deliberately quieter than the primary
+   actions around it -- it carries the write token and shouldn't invite a
+   casual click. */
+.setup-link .copybox {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+}

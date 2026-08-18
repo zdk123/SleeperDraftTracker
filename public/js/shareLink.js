@@ -13,6 +13,7 @@
   // logs and out of any proxy in between.
 
   const PREFIX = '#v1.';
+  const SETUP_PREFIX = '#s1.';
 
   // Every Apps Script deployment URL is this boilerplate wrapped around one id.
   // Stripping it costs nothing and saves 40 characters, which is the difference
@@ -62,6 +63,61 @@
      */
     encode({ url, token, draftKey }) {
       return PREFIX + toBase64Url(JSON.stringify({ u: packUrl(url), t: token || '', k: draftKey || '' }));
+    },
+
+    // --- the operator's setup link -----------------------------------------
+    //
+    // A different thing from the viewer link above, and far more sensitive: it
+    // carries the WRITE token, so whoever holds it can save over the draft.
+    // It exists so the person running the draft doesn't have to hand-type a
+    // deployment id and two tokens on the night.
+    //
+    // Send it directly to that one person. Never to the league chat, and never
+    // in the same message as the viewer link.
+
+    /** @returns the fragment alone, e.g. "#s1.eyJ...". */
+    encodeSetup({ scriptUrl, token, viewToken }) {
+      return (
+        SETUP_PREFIX +
+        toBase64Url(
+          JSON.stringify({ d: packUrl(scriptUrl), t: token || '', v: viewToken || '' })
+        )
+      );
+    },
+
+    buildSetup({ origin, scriptUrl, token, viewToken }) {
+      const base = String(origin || '').replace(/\/(index\.html)?$/, '');
+      return `${base}/index.html${App.shareLink.encodeSetup({ scriptUrl, token, viewToken })}`;
+    },
+
+    /**
+     * @returns {{scriptUrl, token, viewToken}} or null. Like decode(), never
+     *   throws -- a fragment mangled by a chat client must leave the operator
+     *   on a normal setup screen, not a broken page.
+     */
+    decodeSetup(hash) {
+      const raw = String(hash || '');
+      if (!raw.startsWith(SETUP_PREFIX)) return null;
+      try {
+        const parsed = JSON.parse(fromBase64Url(raw.slice(SETUP_PREFIX.length)));
+        if (!parsed || typeof parsed !== 'object') return null;
+        const out = {
+          scriptUrl: parsed.d ? unpackUrl(parsed.d) : '',
+          token: String(parsed.t || ''),
+          viewToken: String(parsed.v || ''),
+        };
+        return out.scriptUrl ? out : null;
+      } catch {
+        return null;
+      }
+    },
+
+    /** Which kind of link, if any, is in this fragment. */
+    kindOf(hash) {
+      const raw = String(hash || '');
+      if (raw.startsWith(PREFIX)) return 'viewer';
+      if (raw.startsWith(SETUP_PREFIX)) return 'setup';
+      return null;
     },
 
     /**

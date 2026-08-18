@@ -391,6 +391,16 @@
       ]),
       status,
       el('hr'),
+      // If this laptop dies, a second one needs the same spreadsheet settings
+      // before it can pick the draft up. Typing them under pressure is exactly
+      // when they get typed wrong.
+      el('h3', { text: 'Move to another computer' }),
+      (() => {
+        const host = el('div', { class: 'setup-link' });
+        App.views.setupLink.render(host);
+        return host;
+      })(),
+      el('hr'),
       el('div', { class: 'btn-stack' }, [
         el('button', {
           class: 'btn btn--ghost',
@@ -493,11 +503,66 @@
     renderDraft();
   }
 
+  /**
+   * A setup link saves the operator hand-typing a deployment id and two tokens
+   * on the night. It carries the write token, so the fragment is wiped from the
+   * address bar the instant it is applied: otherwise it sits there for the rest
+   * of the evening, on a screen being mirrored to a television, and rides along
+   * in any URL anyone copies.
+   *
+   * Runs before sync.init so the very first sync already has the credentials.
+   *
+   * @returns {boolean} whether settings were applied.
+   */
+  function applySetupLink() {
+    const found = App.shareLink.decodeSetup(window.location.hash);
+    // Strip the fragment whether or not it parsed -- a mangled setup link is
+    // still a leaked token.
+    if (App.shareLink.kindOf(window.location.hash) === 'setup') {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+    if (!found) return false;
+
+    persistence.setPref('appsScriptUrl', found.scriptUrl);
+    persistence.setPref('token', found.token);
+    persistence.setPref('viewToken', found.viewToken);
+    return true;
+  }
+
   async function boot() {
     screens = {
       setup: document.getElementById('screen-setup'),
       board: document.getElementById('screen-board'),
     };
+
+    // Someone pasted the guests' link into the operator's app. Send them where
+    // they meant to go rather than showing a setup screen that ignores it.
+    if (App.shareLink.kindOf(window.location.hash) === 'viewer') {
+      window.location.replace(`view.html${window.location.hash}`);
+      return;
+    }
+
+    const configuredByLink = applySetupLink();
+
+    // Clicking a setup link when the app is ALREADY open changes only the
+    // fragment, which does not reload the page -- so without this the operator
+    // clicks the link his browser helpfully focuses the existing tab for, and
+    // nothing whatsoever happens.
+    window.addEventListener('hashchange', () => {
+      if (App.shareLink.kindOf(window.location.hash) === 'viewer') {
+        window.location.replace(`view.html${window.location.hash}`);
+        return;
+      }
+      if (!applySetupLink()) return;
+      const prefs = persistence.prefs();
+      sync.configure({ token: prefs.token || '', appsScriptUrl: prefs.appsScriptUrl || '' });
+      if (document.body.dataset.screen === 'setup') {
+        App.views.setup.render(screens.setup.querySelector('.screen__body'), {
+          onStart: startDraftScreen,
+        });
+      }
+      banner('Spreadsheet settings updated from your link.', 'info', []);
+    });
 
     initTheme();
     sync.init({
@@ -601,6 +666,15 @@
     });
 
     buildChrome();
+
+    if (configuredByLink) {
+      banner(
+        'Spreadsheet settings loaded from your link — the web app URL and both tokens are filled ' +
+          'in. Use “Test connection” to check them before you start.',
+        'info',
+        []
+      );
+    }
 
     const saved = App.restore.local();
     if (saved && saved.picks) {

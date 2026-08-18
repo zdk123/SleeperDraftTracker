@@ -620,6 +620,14 @@ main {
   }
 }
 
+/* The setup link: a handoff control, deliberately quieter than the primary
+   actions around it -- it carries the write token and shouldn't invite a
+   casual click. */
+.setup-link .copybox {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+}
+
 </style>
     <style>
 /* The shared-screen half: entry bar plus the board itself. Sized to be read
@@ -2868,6 +2876,7 @@ function reconstruct(cfg, pickRows) {
   // logs and out of any proxy in between.
 
   const PREFIX = '#v1.';
+  const SETUP_PREFIX = '#s1.';
 
   // Every Apps Script deployment URL is this boilerplate wrapped around one id.
   // Stripping it costs nothing and saves 40 characters, which is the difference
@@ -2917,6 +2926,61 @@ function reconstruct(cfg, pickRows) {
      */
     encode({ url, token, draftKey }) {
       return PREFIX + toBase64Url(JSON.stringify({ u: packUrl(url), t: token || '', k: draftKey || '' }));
+    },
+
+    // --- the operator's setup link -----------------------------------------
+    //
+    // A different thing from the viewer link above, and far more sensitive: it
+    // carries the WRITE token, so whoever holds it can save over the draft.
+    // It exists so the person running the draft doesn't have to hand-type a
+    // deployment id and two tokens on the night.
+    //
+    // Send it directly to that one person. Never to the league chat, and never
+    // in the same message as the viewer link.
+
+    /** @returns the fragment alone, e.g. "#s1.eyJ...". */
+    encodeSetup({ scriptUrl, token, viewToken }) {
+      return (
+        SETUP_PREFIX +
+        toBase64Url(
+          JSON.stringify({ d: packUrl(scriptUrl), t: token || '', v: viewToken || '' })
+        )
+      );
+    },
+
+    buildSetup({ origin, scriptUrl, token, viewToken }) {
+      const base = String(origin || '').replace(/\/(index\.html)?$/, '');
+      return `${base}/index.html${App.shareLink.encodeSetup({ scriptUrl, token, viewToken })}`;
+    },
+
+    /**
+     * @returns {{scriptUrl, token, viewToken}} or null. Like decode(), never
+     *   throws -- a fragment mangled by a chat client must leave the operator
+     *   on a normal setup screen, not a broken page.
+     */
+    decodeSetup(hash) {
+      const raw = String(hash || '');
+      if (!raw.startsWith(SETUP_PREFIX)) return null;
+      try {
+        const parsed = JSON.parse(fromBase64Url(raw.slice(SETUP_PREFIX.length)));
+        if (!parsed || typeof parsed !== 'object') return null;
+        const out = {
+          scriptUrl: parsed.d ? unpackUrl(parsed.d) : '',
+          token: String(parsed.t || ''),
+          viewToken: String(parsed.v || ''),
+        };
+        return out.scriptUrl ? out : null;
+      } catch {
+        return null;
+      }
+    },
+
+    /** Which kind of link, if any, is in this fragment. */
+    kindOf(hash) {
+      const raw = String(hash || '');
+      if (raw.startsWith(PREFIX)) return 'viewer';
+      if (raw.startsWith(SETUP_PREFIX)) return 'setup';
+      return null;
     },
 
     /**
@@ -3595,6 +3659,107 @@ function reconstruct(cfg, pickRows) {
 (function (App) {
   'use strict';
 
+  const { el, clear } = App.utils;
+  const { persistence } = App;
+
+  // Builds the link that hands the whole spreadsheet setup to whoever is
+  // actually running the draft, so they don't type a deployment id and two
+  // tokens from a phone screen while a room waits.
+  //
+  // Rendered in two places, from one function: the setup screen (where the
+  // settings are entered) and the recovery panel (where you'd need it if the
+  // draft laptop died and a second one has to be configured in a hurry).
+
+  /**
+   * @param {object} [override] values to use instead of what's in prefs --
+   *   the setup screen passes the live contents of its inputs, which may not
+   *   have been committed to prefs yet.
+   */
+  function currentValues(override) {
+    const prefs = persistence.prefs();
+    return {
+      scriptUrl: (override && override.scriptUrl) || prefs.appsScriptUrl || '',
+      token: (override && override.token) || prefs.token || '',
+      viewToken: (override && override.viewToken) || prefs.viewToken || '',
+    };
+  }
+
+  App.views = App.views || {};
+  App.views.setupLink = {
+    /**
+     * @param {HTMLElement} host
+     * @param {function} [read] returns {scriptUrl, token, viewToken} at click
+     *   time, so the link reflects what is on screen right now.
+     */
+    render(host, read) {
+      clear(host);
+      const status = el('div', { class: 'note-slot' });
+      const box = el('textarea', { class: 'copybox', readonly: true, rows: '3', hidden: true });
+
+      host.append(
+        el('p', {
+          class: 'muted small',
+          text:
+            'Running the draft on someone else’s laptop? This link fills all three boxes above ' +
+            'for them, so there is nothing to type on the night.',
+        }),
+        el('div', { class: 'field-row' }, [
+          el('button', {
+            type: 'button',
+            class: 'btn btn--ghost',
+            text: 'Copy a setup link',
+            onclick: async (e) => {
+              const values = currentValues(read ? read() : null);
+              if (!values.scriptUrl) {
+                clear(status).append(
+                  el('span', {
+                    class: 'note note--warn',
+                    text: 'Add the web app URL first — there is nothing to send yet.',
+                  })
+                );
+                return;
+              }
+
+              const link = App.shareLink.buildSetup({
+                origin: window.location.origin + window.location.pathname.replace(/[^/]*$/, ''),
+                ...values,
+              });
+              box.value = link;
+              box.hidden = false;
+
+              try {
+                await navigator.clipboard.writeText(link);
+                clear(status).append(el('span', { class: 'note note--ok', text: 'Copied.' }));
+              } catch {
+                box.select();
+                clear(status).append(
+                  el('span', { class: 'note note--info', text: 'Press Ctrl/Cmd+C to copy.' })
+                );
+              }
+              e.target.blur();
+            },
+          }),
+        ]),
+        box,
+        // Said plainly, because the consequence is not obvious from the link.
+        el('p', {
+          class: 'muted small',
+          text:
+            '⚠ This one contains your access token — whoever opens it can save over the draft. ' +
+            'Send it straight to the person running the draft, not to the league chat, and not ' +
+            'in the same message as the viewer link.',
+        }),
+        status
+      );
+    },
+  };
+})(window.DraftApp);
+
+</script>
+    <script>
+(function (App) {
+  'use strict';
+
   const { el, clear, uid } = App.utils;
   const { store } = App;
 
@@ -3789,6 +3954,10 @@ function reconstruct(cfg, pickRows) {
         }),
       ]);
 
+      // Reads the inputs at click time rather than prefs, so the link carries
+      // what is on screen even if nothing has been committed yet.
+      const setupLinkHost = el('div', { class: 'setup-link' });
+
       const viewTokenInput = el('input', {
         type: 'text',
         id: 'view-token',
@@ -3807,6 +3976,12 @@ function reconstruct(cfg, pickRows) {
       tokenInput.addEventListener('change', applySheetSettings);
       viewTokenInput.addEventListener('change', applySheetSettings);
       applySheetSettings();
+
+      App.views.setupLink.render(setupLinkHost, () => ({
+        scriptUrl: scriptUrlInput.value.trim(),
+        token: tokenInput.value.trim(),
+        viewToken: viewTokenInput.value.trim(),
+      }));
       const usernameInput = el('input', { type: 'text', id: 'sleeper-user', placeholder: 'Sleeper username' });
       const leagueInput = el('input', { type: 'text', id: 'sleeper-league', placeholder: 'or paste a league ID' });
 
@@ -4045,6 +4220,8 @@ function reconstruct(cfg, pickRows) {
               }),
             ]),
             healthNote,
+            el('hr'),
+            setupLinkHost,
           ]),
 
           el('div', { class: 'setup__actions' }, [
@@ -5328,6 +5505,16 @@ function reconstruct(cfg, pickRows) {
       ]),
       status,
       el('hr'),
+      // If this laptop dies, a second one needs the same spreadsheet settings
+      // before it can pick the draft up. Typing them under pressure is exactly
+      // when they get typed wrong.
+      el('h3', { text: 'Move to another computer' }),
+      (() => {
+        const host = el('div', { class: 'setup-link' });
+        App.views.setupLink.render(host);
+        return host;
+      })(),
+      el('hr'),
       el('div', { class: 'btn-stack' }, [
         el('button', {
           class: 'btn btn--ghost',
@@ -5430,11 +5617,66 @@ function reconstruct(cfg, pickRows) {
     renderDraft();
   }
 
+  /**
+   * A setup link saves the operator hand-typing a deployment id and two tokens
+   * on the night. It carries the write token, so the fragment is wiped from the
+   * address bar the instant it is applied: otherwise it sits there for the rest
+   * of the evening, on a screen being mirrored to a television, and rides along
+   * in any URL anyone copies.
+   *
+   * Runs before sync.init so the very first sync already has the credentials.
+   *
+   * @returns {boolean} whether settings were applied.
+   */
+  function applySetupLink() {
+    const found = App.shareLink.decodeSetup(window.location.hash);
+    // Strip the fragment whether or not it parsed -- a mangled setup link is
+    // still a leaked token.
+    if (App.shareLink.kindOf(window.location.hash) === 'setup') {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    }
+    if (!found) return false;
+
+    persistence.setPref('appsScriptUrl', found.scriptUrl);
+    persistence.setPref('token', found.token);
+    persistence.setPref('viewToken', found.viewToken);
+    return true;
+  }
+
   async function boot() {
     screens = {
       setup: document.getElementById('screen-setup'),
       board: document.getElementById('screen-board'),
     };
+
+    // Someone pasted the guests' link into the operator's app. Send them where
+    // they meant to go rather than showing a setup screen that ignores it.
+    if (App.shareLink.kindOf(window.location.hash) === 'viewer') {
+      window.location.replace(`view.html${window.location.hash}`);
+      return;
+    }
+
+    const configuredByLink = applySetupLink();
+
+    // Clicking a setup link when the app is ALREADY open changes only the
+    // fragment, which does not reload the page -- so without this the operator
+    // clicks the link his browser helpfully focuses the existing tab for, and
+    // nothing whatsoever happens.
+    window.addEventListener('hashchange', () => {
+      if (App.shareLink.kindOf(window.location.hash) === 'viewer') {
+        window.location.replace(`view.html${window.location.hash}`);
+        return;
+      }
+      if (!applySetupLink()) return;
+      const prefs = persistence.prefs();
+      sync.configure({ token: prefs.token || '', appsScriptUrl: prefs.appsScriptUrl || '' });
+      if (document.body.dataset.screen === 'setup') {
+        App.views.setup.render(screens.setup.querySelector('.screen__body'), {
+          onStart: startDraftScreen,
+        });
+      }
+      banner('Spreadsheet settings updated from your link.', 'info', []);
+    });
 
     initTheme();
     sync.init({
@@ -5538,6 +5780,15 @@ function reconstruct(cfg, pickRows) {
     });
 
     buildChrome();
+
+    if (configuredByLink) {
+      banner(
+        'Spreadsheet settings loaded from your link — the web app URL and both tokens are filled ' +
+          'in. Use “Test connection” to check them before you start.',
+        'info',
+        []
+      );
+    }
 
     const saved = App.restore.local();
     if (saved && saved.picks) {

@@ -5,7 +5,7 @@
 
 // Bump this whenever SHELL changes: it is what evicts a stale cache, and a
 // half-updated shell is worse than no cache at all.
-const CACHE_VERSION = 'draft-v4';
+const CACHE_VERSION = 'draft-v5';
 
 // Must list every asset index.html references. scripts/test.mjs compares the
 // two and fails on drift -- a script missing here loads fine online and then
@@ -30,6 +30,7 @@ const SHELL = [
   'js/restore.js',
   'js/export.js',
   'js/views/syncStatus.js',
+  'js/views/setupLink.js',
   'js/views/setup.js',
   'js/views/entry.js',
   'js/views/qrcode.js',

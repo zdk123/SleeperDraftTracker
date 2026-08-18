@@ -404,6 +404,96 @@ async function main() {
     await evaluate(`document.getElementById('panel-close').click()`);
     await sleep(100);
 
+    // A setup link fills in the spreadsheet settings so the operator types
+    // nothing on the night -- and then has to disappear, because it carries the
+    // write token and the screen is being mirrored to a television.
+    console.log('\nSetup link');
+    {
+      const link = await evaluate(`DraftApp.shareLink.encodeSetup({
+        scriptUrl: 'https://script.google.com/macros/s/AKfyTESTID/exec',
+        token: 'write-tok-abc',
+        viewToken: 'view-tok-xyz',
+      })`);
+      // Clear the saved draft first: the case that matters is a fresh laptop
+      // landing on the setup screen, where the form should come up filled in.
+      // With a draft in localStorage the app resumes onto the board instead and
+      // there is no form to check.
+      await evaluate(`localStorage.clear()`);
+      // A fragment-only change does not reload, so start from a blank page to
+      // test the cold-open path honestly.
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(300);
+      await send('Page.navigate', { url: `${URL_BASE}${link}` });
+      await sleep(1500);
+      check('a setup link lands on the setup screen',
+        (await evaluate('document.body.dataset.screen')) === 'setup');
+
+      const applied = JSON.parse(await evaluate(`JSON.stringify({
+        url: DraftApp.persistence.prefs().appsScriptUrl,
+        token: DraftApp.persistence.prefs().token,
+        viewToken: DraftApp.persistence.prefs().viewToken,
+        hash: location.hash,
+        href: location.href,
+        field: (document.getElementById('apps-script-url') || {}).value,
+        tokenField: (document.getElementById('token') || {}).value,
+      })`));
+
+      check('setup link fills the web app URL',
+        applied.url === 'https://script.google.com/macros/s/AKfyTESTID/exec', applied.url);
+      check('setup link fills both tokens',
+        applied.token === 'write-tok-abc' && applied.viewToken === 'view-tok-xyz',
+        `${applied.token} / ${applied.viewToken}`);
+      check('the form shows the values, not just storage',
+        applied.field === 'https://script.google.com/macros/s/AKfyTESTID/exec' &&
+          applied.tokenField === 'write-tok-abc',
+        `${applied.field} / ${applied.tokenField}`);
+      check('the write token is wiped from the address bar',
+        applied.hash === '' && !applied.href.includes('write-tok-abc'), applied.href);
+      check('the operator is told what happened',
+        /settings loaded from your link/i.test(await evaluate('document.body.innerText')));
+
+      // The realistic case: the app is already open and he clicks the link,
+      // so the browser focuses this tab and only the fragment changes.
+      const second = await evaluate(`DraftApp.shareLink.encodeSetup({
+        scriptUrl: 'https://script.google.com/macros/s/AKfySECOND/exec',
+        token: 'write-tok-2',
+        viewToken: 'view-tok-2',
+      })`);
+      await evaluate(`location.hash = ${JSON.stringify(second.slice(1))}`);
+      await sleep(600);
+
+      const updated = JSON.parse(await evaluate(`JSON.stringify({
+        url: DraftApp.persistence.prefs().appsScriptUrl,
+        token: DraftApp.persistence.prefs().token,
+        hash: location.hash,
+        field: (document.getElementById('apps-script-url') || {}).value,
+      })`));
+      check('a setup link applies even when the app is already open',
+        updated.url === 'https://script.google.com/macros/s/AKfySECOND/exec' &&
+          updated.token === 'write-tok-2',
+        `${updated.url} / ${updated.token}`);
+      check('the form is redrawn with the new values',
+        updated.field === 'https://script.google.com/macros/s/AKfySECOND/exec', updated.field);
+      check('and that fragment is wiped too', updated.hash === '', updated.hash);
+    }
+
+    // The guests' link pasted into the operator's app: send them where they
+    // meant to go rather than silently ignoring it.
+    {
+      const viewer = await evaluate(
+        `DraftApp.shareLink.encode({ url: 'https://script.google.com/macros/s/AKfyTESTID/exec', token: 'v', draftKey: 'k' })`
+      );
+      await send('Page.navigate', { url: 'about:blank' });
+      await sleep(300);
+      await send('Page.navigate', { url: `${URL_BASE}${viewer}` });
+      await sleep(1500);
+      check('a viewer link opened on the operator page redirects to the viewer',
+        /view\.html/.test(await evaluate('location.pathname + location.hash')),
+        await evaluate('location.pathname'));
+      await send('Page.navigate', { url: URL_BASE });
+      await sleep(1200);
+    }
+
     console.log('\nConsole health');
     check('no uncaught page errors', pageErrors.length === 0, pageErrors.join('\n       '));
     check('no console errors', consoleErrors.length === 0, consoleErrors.join('\n       '));

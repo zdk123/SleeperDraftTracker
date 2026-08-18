@@ -195,6 +195,10 @@
         }),
       ]);
 
+      // Reads the inputs at click time rather than prefs, so the link carries
+      // what is on screen even if nothing has been committed yet.
+      const setupLinkHost = el('div', { class: 'setup-link' });
+
       const viewTokenInput = el('input', {
         type: 'text',
         id: 'view-token',
@@ -213,6 +217,12 @@
       tokenInput.addEventListener('change', applySheetSettings);
       viewTokenInput.addEventListener('change', applySheetSettings);
       applySheetSettings();
+
+      App.views.setupLink.render(setupLinkHost, () => ({
+        scriptUrl: scriptUrlInput.value.trim(),
+        token: tokenInput.value.trim(),
+        viewToken: viewTokenInput.value.trim(),
+      }));
       const usernameInput = el('input', { type: 'text', id: 'sleeper-user', placeholder: 'Sleeper username' });
       const leagueInput = el('input', { type: 'text', id: 'sleeper-league', placeholder: 'or paste a league ID' });
 
@@ -451,6 +461,8 @@
               }),
             ]),
             healthNote,
+            el('hr'),
+            setupLinkHost,
           ]),
 
           el('div', { class: 'setup__actions' }, [

@@ -370,6 +370,76 @@ await test('a non-Apps-Script URL travels whole rather than being mangled', asyn
   assert.equal(shareLink.decode(shareLink.encode({ url, token: 't', draftKey: 'k' })).url, url);
 });
 
+console.log('\nThe operator’s setup link');
+
+await test('a setup link round-trips all three settings', async () => {
+  const { shareLink } = harness().App;
+  const input = {
+    scriptUrl: 'https://script.google.com/macros/s/AKfycbwnPqmmZQX9pARZ7pYc9u1-r0mCRSlYxP0tz/exec',
+    token: 'operator-secret',
+    viewToken: 'guest-secret',
+  };
+  assert.deepEqual(shareLink.decodeSetup(shareLink.encodeSetup(input)), input);
+});
+
+await test('setup and viewer links are told apart', async () => {
+  // They must never be confused: one is read-only and meant for a room, the
+  // other carries the write token and is meant for one person.
+  const { shareLink } = harness().App;
+  const viewer = shareLink.encode({ url: 'https://s/exec', token: 'v', draftKey: 'k' });
+  const setup = shareLink.encodeSetup({ scriptUrl: 'https://s/exec', token: 'w', viewToken: 'v' });
+
+  assert.equal(shareLink.kindOf(viewer), 'viewer');
+  assert.equal(shareLink.kindOf(setup), 'setup');
+  assert.equal(shareLink.kindOf('#nonsense'), null);
+  assert.equal(shareLink.kindOf(''), null);
+
+  assert.equal(shareLink.decodeSetup(viewer), null, 'a viewer link must not parse as setup');
+  assert.equal(shareLink.decode(setup), null, 'a setup link must not parse as a viewer link');
+});
+
+await test('a mangled setup link decodes to null rather than throwing', async () => {
+  const { shareLink } = harness().App;
+  const good = shareLink.encodeSetup({ scriptUrl: 'https://s/exec', token: 'w', viewToken: 'v' });
+  assert.equal(shareLink.decodeSetup(good.slice(0, good.length - 10)), null);
+  assert.equal(shareLink.decodeSetup('#s1.'), null);
+  assert.equal(shareLink.decodeSetup('#s1.' + Buffer.from('{"t":"w"}').toString('base64')), null,
+    'no deployment id means nothing usable');
+});
+
+await test('the setup link carries the deployment id, not the whole URL', async () => {
+  const { shareLink } = harness().App;
+  const encoded = shareLink.encodeSetup({
+    scriptUrl: 'https://script.google.com/macros/s/AKfyABC/exec',
+    token: 'w',
+    viewToken: 'v',
+  });
+  assert.ok(!encoded.includes('script.google.com'));
+  assert.equal(shareLink.decodeSetup(encoded).scriptUrl, 'https://script.google.com/macros/s/AKfyABC/exec');
+});
+
+await test('buildSetup points at the operator’s page, not the viewer’s', async () => {
+  const { shareLink } = harness().App;
+  const link = shareLink.buildSetup({
+    origin: 'https://draft.vercel.app/',
+    scriptUrl: 'https://s/exec', token: 'w', viewToken: 'v',
+  });
+  assert.ok(link.startsWith('https://draft.vercel.app/index.html#s1.'), link);
+  assert.ok(!link.includes('view.html'), 'the operator link must not open the read-only page');
+});
+
+await test('both link types keep their secrets out of the query string', async () => {
+  const { shareLink } = harness().App;
+  const setup = shareLink.buildSetup({
+    origin: 'https://d.app', scriptUrl: 'https://s/exec',
+    token: 'write-secret', viewToken: 'view-secret',
+  });
+  const beforeHash = setup.slice(0, setup.indexOf('#'));
+  assert.ok(!beforeHash.includes('write-secret'));
+  assert.ok(!beforeHash.includes('view-secret'));
+  assert.ok(!setup.includes('?'), 'a fragment is never sent to the server; a query string is');
+});
+
 console.log('\nWhere a link is worth handing out');
 
 await test('sharing is refused from file:// and from localhost', async () => {
