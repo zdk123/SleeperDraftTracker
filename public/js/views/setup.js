@@ -433,7 +433,9 @@
                       kind
                     );
                   } catch (err) {
-                    note(healthNote, `Could not reach the server: ${err.message}`, 'warn');
+                    // The hint is the part that says what to actually do about
+                    // it, so never drop it on the floor.
+                    note(healthNote, `${err.message}${err.hint ? ` ${err.hint}` : ''}`, 'warn');
                   } finally {
                     e.target.disabled = false;
                   }

@@ -3,7 +3,7 @@
 // draft night: budget guardrails, slot assignment, and the sheet round-trip.
 // Run with: node scripts/test.mjs
 
-import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
@@ -691,6 +691,29 @@ test('server and browser produce byte-identical rows for the same state', () => 
   assert.deepEqual(App.schema.stateToRanges(state), stateToRanges(state));
   assert.deepEqual(App.schema.indexRow(state), indexRow(state));
   assert.deepEqual(App.schema.draftKeyOf(state), draftKeyOf(state));
+});
+
+console.log('\nOffline shell');
+
+test('the service worker precaches everything index.html loads', () => {
+  // A script in index.html but not in SHELL works perfectly until the wifi
+  // drops and the page is reloaded -- which is the one moment the service
+  // worker exists for.
+  const html = readFileSync(join(ROOT, 'public', 'index.html'), 'utf8');
+  const sw = readFileSync(join(ROOT, 'public', 'sw.js'), 'utf8');
+
+  const referenced = [...html.matchAll(/(?:src|href)="((?:js|css|data)\/[^"]+)"/g)].map((m) => m[1]);
+  assert.ok(referenced.length > 10, 'expected to find the asset list in index.html');
+
+  const missing = referenced.filter((asset) => !sw.includes(`'${asset}'`));
+  assert.deepEqual(missing, [], `not precached by sw.js: ${missing.join(', ')}`);
+});
+
+test('the cached shell has no entries that no longer exist', () => {
+  const sw = readFileSync(join(ROOT, 'public', 'sw.js'), 'utf8');
+  const shell = [...sw.matchAll(/'((?:js|css|data)\/[^']+)'/g)].map((m) => m[1]);
+  const gone = shell.filter((asset) => !existsSync(join(ROOT, 'public', asset)));
+  assert.deepEqual(gone, [], `sw.js precaches missing files: ${gone.join(', ')}`);
 });
 
 console.log('\nCredentials from the environment');

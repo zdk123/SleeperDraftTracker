@@ -2674,8 +2674,53 @@ function reconstruct(cfg, pickRows) {
      * Script has no way to answer -- the request would fail before Google ever
      * saw it. The script reads the body as JSON regardless of this header.
      */
+    /**
+     * When Apps Script serves an error page instead of running the script, the
+     * page carries no CORS headers and the browser rejects the fetch with a
+     * bare "Failed to fetch" -- the useful part is unreadable from here. So on
+     * failure, probe again with mode:'no-cors': that resolves for any response
+     * at all, which separates "Google answered, the script did not" from "the
+     * URL is wrong or the network is down".
+     */
+    async function diagnose(err) {
+      let answered = false;
+      try {
+        await fetch(url, { method: 'POST', mode: 'no-cors', body: '{}' });
+        answered = true;
+      } catch {
+        /* nothing there at all */
+      }
+
+      if (answered) {
+        return Object.assign(new Error('The script URL answered, but not with data.'), {
+          code: 'not_deployed',
+          hint:
+            'Usually the deployment is older than the code. In Apps Script: save the file, ' +
+            'then Deploy → Manage deployments → ✏️ → Version: New version → Deploy. ' +
+            'Also check "Who has access" is Anyone.',
+        });
+      }
+      return Object.assign(new Error(err.message || 'Could not reach the Apps Script URL.'), {
+        code: 'unreachable',
+        hint: /\/exec\s*$/.test(url)
+          ? 'Nothing answered at that URL. Check it was copied whole, and that you are online.'
+          : 'That URL should end in /exec — the /dev one only works while signed in as you.',
+      });
+    }
+
     async function call(payload) {
       if (!url) return result(503, { ok: false, error: { code: 'not_configured', message: 'No Apps Script URL set.' } });
+
+      // The /dev URL is the editor's private preview: it only works in a
+      // browser already signed in as the script's owner, so it will fail for
+      // the operator on the night. Catch it here rather than after a failure.
+      if (/\/dev\/?$/.test(url)) {
+        throw Object.assign(new Error('That is the /dev URL, which only works for you.'), {
+          code: 'dev_url',
+          hint: 'Use the deployment URL ending in /exec — Deploy → Manage deployments.',
+        });
+      }
+
       let res;
       try {
         res = await fetch(url, {
@@ -2685,13 +2730,7 @@ function reconstruct(cfg, pickRows) {
           redirect: 'follow',
         });
       } catch (err) {
-        // Network failure, or the deployment is not shared with "Anyone".
-        throw Object.assign(new Error(err.message || 'Could not reach the Apps Script URL.'), {
-          code: 'unreachable',
-          hint:
-            'Check the deployment is set to "Anyone" under "Who has access", and that ' +
-            'the URL ends in /exec rather than /dev.',
-        });
+        throw await diagnose(err);
       }
 
       const text = await res.text();
@@ -2699,10 +2738,14 @@ function reconstruct(cfg, pickRows) {
       try {
         data = JSON.parse(text);
       } catch {
-        // A login page instead of JSON: the deployment is private.
-        throw Object.assign(new Error('The Apps Script URL returned a page, not data.'), {
-          code: 'not_shared',
-          hint: 'Re-deploy the script with "Who has access" set to "Anyone".',
+        // HTML rather than JSON: a login page, or Apps Script's own error page.
+        const notFound = /Script function not found/i.test(text);
+        throw Object.assign(new Error('The script URL returned a page, not data.'), {
+          code: notFound ? 'not_deployed' : 'not_shared',
+          hint: notFound
+            ? 'The deployed version has no doPost. Save Code.gs, then Deploy → Manage ' +
+              'deployments → ✏️ → Version: New version → Deploy.'
+            : 'Re-deploy the script with "Who has access" set to Anyone.',
         });
       }
 
@@ -3656,7 +3699,9 @@ function reconstruct(cfg, pickRows) {
                       kind
                     );
                   } catch (err) {
-                    note(healthNote, `Could not reach the server: ${err.message}`, 'warn');
+                    // The hint is the part that says what to actually do about
+                    // it, so never drop it on the floor.
+                    note(healthNote, `${err.message}${err.hint ? ` ${err.hint}` : ''}`, 'warn');
                   } finally {
                     e.target.disabled = false;
                   }

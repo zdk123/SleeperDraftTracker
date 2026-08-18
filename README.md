@@ -156,8 +156,14 @@ credential is already in place and the setup screen only needs the access token.
 6. In the draft app's setup screen: set *How it reaches the sheet* to **Script in the spreadsheet**,
    paste the URL and the same token, and click **Test connection**. You want "Connected to …".
 
-If you later edit `Code.gs`, you must **Deploy → Manage deployments → ✏️ → New version** for the
-change to take effect. Editing alone doesn't redeploy.
+**A deployment is a frozen snapshot of the code.** Editing `Code.gs` changes nothing about what the
+`/exec` URL serves until you publish a new version: **Deploy → Manage deployments → ✏️ → Version:
+New version → Deploy**. Use *Manage deployments*, not *New deployment* — the latter mints a
+different URL you'd have to re-paste.
+
+If you visit the `/exec` URL in a browser and see **"Script function not found: doGet"**, that's
+this exact problem: the published version predates the code. Save the file, then publish a new
+version.
 
 </details>
 

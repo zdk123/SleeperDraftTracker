@@ -2,8 +2,13 @@
 // leave the operator staring at a white screen. API calls always go to the
 // network -- a cached sync response would be actively harmful.
 
-const CACHE_VERSION = 'draft-v1';
+// Bump this whenever SHELL changes: it is what evicts a stale cache, and a
+// half-updated shell is worse than no cache at all.
+const CACHE_VERSION = 'draft-v2';
 
+// Must list every asset index.html references. scripts/test.mjs compares the
+// two and fails on drift -- a script missing here loads fine online and then
+// vanishes the moment the venue's wifi does.
 const SHELL = [
   '.',
   'index.html',
@@ -11,11 +16,13 @@ const SHELL = [
   'css/board.css',
   'data/players.json',
   'js/utils.js',
+  'js/schema.js',
   'js/state.js',
   'js/persistence.js',
   'js/players.js',
   'js/validation.js',
   'js/sleeperApi.js',
+  'js/backends.js',
   'js/sync.js',
   'js/restore.js',
   'js/export.js',

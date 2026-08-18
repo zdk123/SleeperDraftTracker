@@ -12,6 +12,7 @@ import { mkdtemp, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createServer } from 'node:http';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const FILE_URL = `file://${join(ROOT, 'DraftBoard-offline.html')}`;
@@ -61,6 +62,31 @@ function check(name, condition, detail) {
     failed += 1;
     console.error(`  FAIL ${name}${detail ? `\n       ${detail}` : ''}`);
   }
+}
+
+/**
+ * Stands in for an Apps Script deployment whose published version predates the
+ * code: Google serves its own HTML error page, and -- crucially -- sends no
+ * CORS headers with it, which is what turns a fixable mistake into an opaque
+ * "Failed to fetch" in the browser. Reproduced verbatim so the app's handling
+ * of it is tested against the real shape.
+ */
+function startErrorPageServer() {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); // no ACAO, deliberately
+    res.end(
+      '<!DOCTYPE html><html><head><title>Error</title></head><body>' +
+        '<div style="text-align:center">Script function not found: doGet</div></body></html>'
+    );
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () =>
+      resolve({
+        url: `http://127.0.0.1:${server.address().port}/exec`,
+        close: () => new Promise((r) => server.close(r)),
+      })
+    );
+  });
 }
 
 async function main() {
@@ -220,6 +246,46 @@ async function main() {
     const text = await evaluate('DraftApp.exporter.rostersText()');
     check('roster export produced', /Alpha/.test(text) && /Allen/.test(text), text.slice(0, 160));
     check('export shows the price with a dollar sign', /\$40/.test(text));
+
+    // --- Apps Script misconfiguration, told apart from a real outage --------
+    //
+    // A deployment older than the code serves Apps Script's own HTML error page
+    // with no CORS headers, so the browser rejects the fetch with a bare
+    // "Failed to fetch" and the real reason is unreadable. The app probes again
+    // with mode:'no-cors' to tell that apart from nothing being there at all.
+    // Both cases have to name the actual fix.
+    console.log('\nApps Script diagnostics');
+
+    const undeployed = await startErrorPageServer();
+    try {
+      const probe = async (url) =>
+        JSON.parse(
+          await evaluate(`(() => {
+            DraftApp.sync.configure({ backend: 'appsScript', appsScriptUrl: ${JSON.stringify(url)} });
+            return DraftApp.sync.health()
+              .then(h => JSON.stringify({ ok: true, health: h }))
+              .catch(e => JSON.stringify({ ok: false, code: e.code, message: e.message, hint: e.hint }));
+          })()`)
+        );
+
+      const stale = await probe(undeployed.url);
+      check('an undeployed script is named as such, not as a network failure',
+        stale.code === 'not_deployed', `${stale.code}: ${stale.message}`);
+      check('and the message says how to fix it',
+        /New version/i.test(stale.hint || ''), stale.hint);
+
+      const dead = await probe('http://127.0.0.1:9/exec');
+      check('a URL with nothing behind it reads as unreachable',
+        dead.code === 'unreachable', `${dead.code}: ${dead.message}`);
+
+      // Caught on shape alone, with no request made -- the /dev URL works in
+      // the author's own browser, so it fails only for the operator.
+      const devUrl = await probe(undeployed.url.replace(/\/exec$/, '/dev'));
+      check('a /dev URL is called out before anything is sent',
+        devUrl.code === 'dev_url' && /\/exec/.test(devUrl.hint || ''), `${devUrl.code}: ${devUrl.hint}`);
+    } finally {
+      await undeployed.close();
+    }
 
     console.log('\nConsole health');
     // A failed fetch to a file:// relative /api path logs a network error in
