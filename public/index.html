@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Auction Draft Board</title>
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="css/board.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='14'>🏈</text></svg>"
+    />
+  </head>
+  <body data-screen="setup">
+    <header class="topbar">
+      <div class="topbar__brand">
+        <span class="topbar__mark">🏈</span>
+        <span class="topbar__title">Auction Draft</span>
+      </div>
+      <div class="topbar__actions" id="topbar-actions"></div>
+    </header>
+
+    <div id="banners" class="banners"></div>
+
+    <main>
+      <section class="screen" id="screen-setup">
+        <div class="screen__body"></div>
+      </section>
+
+      <section class="screen" id="screen-board" hidden>
+        <div id="entry-host" class="entry-host"></div>
+        <div class="screen__body"></div>
+      </section>
+    </main>
+
+    <aside class="panel" id="panel" hidden>
+      <div class="panel__head">
+        <h2 id="panel-title">Panel</h2>
+        <button class="btn btn--ghost btn--icon" id="panel-close" title="Close">×</button>
+      </div>
+      <div class="panel__body" id="panel-body"></div>
+    </aside>
+
+    <!-- Classic script tags in dependency order: no build step, no ES modules
+         (file:// blocks module loading), no CDN. Everything hangs off
+         window.DraftApp. -->
+    <script src="js/utils.js"></script>
+    <script src="js/state.js"></script>
+    <script src="js/persistence.js"></script>
+    <script src="js/players.js"></script>
+    <script src="js/validation.js"></script>
+    <script src="js/sleeperApi.js"></script>
+    <script src="js/sync.js"></script>
+    <script src="js/restore.js"></script>
+    <script src="js/export.js"></script>
+    <script src="js/views/syncStatus.js"></script>
+    <script src="js/views/setup.js"></script>
+    <script src="js/views/entry.js"></script>
+    <script src="js/views/board.js"></script>
+    <script src="js/views/history.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>

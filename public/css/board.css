@@ -1,0 +1,426 @@
+/* The shared-screen half: entry bar plus the board itself. Sized to be read
+   from across a room, so type is large and the palette stays quiet -- the
+   numbers should be the only thing competing for attention. */
+
+/* --- pick entry ------------------------------------------------------------ */
+
+.entry-host {
+  position: sticky;
+  top: 49px;
+  z-index: 15;
+  margin: -1rem -1rem 1rem;
+  padding: 0.85rem 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.entry__row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+.entry__row--sub {
+  margin-top: 0.5rem;
+  align-items: center;
+  gap: 1rem;
+  min-height: 1.6rem;
+}
+
+.entry__field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.entry__field--grow {
+  flex: 1;
+  min-width: 200px;
+}
+.entry__field--price {
+  width: 7rem;
+}
+.entry__label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+.entry__player,
+.entry__team,
+.entry__price {
+  font-size: 1.15rem;
+  padding: 0.55rem 0.7rem;
+}
+.entry__price {
+  text-align: right;
+  font-weight: 600;
+}
+.entry__team {
+  min-width: 11rem;
+}
+.entry__row .btn {
+  padding: 0.62rem 1.3rem;
+  font-size: 1.05rem;
+}
+
+.entry__feedback:empty {
+  display: none;
+}
+.feedback {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius);
+}
+.feedback--warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+.feedback--error {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+/* --- autocomplete ---------------------------------------------------------- */
+
+.ac {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  margin-top: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.ac__item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  cursor: pointer;
+}
+.ac__item.is-active {
+  background: var(--info-bg);
+}
+.ac__item.is-drafted {
+  opacity: 0.45;
+}
+.ac__name {
+  font-weight: 500;
+  flex: 1;
+}
+.ac__meta {
+  font-size: 0.82rem;
+  color: var(--text-faint);
+}
+.ac__taken {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--bad);
+}
+
+.slot-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.slot-choice__label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  font-weight: 600;
+}
+.chip {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 99px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.chip.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+/* --- summary + recent ------------------------------------------------------ */
+
+.summary {
+  display: flex;
+  align-items: center;
+  gap: 2.5rem;
+  padding: 0 0.25rem 0.85rem;
+}
+
+/* Whose turn it is to open the bidding -- the one thing the room needs to be
+   told, since the app is the only place that order is written down. */
+.summary__nominating {
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem 0.9rem;
+  border-left: 3px solid var(--accent);
+  background: var(--info-bg);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.summary__team {
+  font-size: 1.3rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--accent);
+}
+.summary__nominating .summary__lbl {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+}
+.summary__stat {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+.summary__num {
+  font-size: 1.5rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.summary__lbl {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.recent {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding-bottom: 0.85rem;
+}
+.recent--empty {
+  padding: 0.5rem 0.25rem 1rem;
+}
+.recent__item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+  padding: 0.45rem 0.75rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.92rem;
+}
+.recent__item.is-newest {
+  border-color: var(--accent);
+  animation: pop 0.35s ease;
+}
+@keyframes pop {
+  from {
+    transform: translateY(-3px);
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .recent__item.is-newest {
+    animation: none;
+  }
+}
+.recent__price {
+  font-weight: 650;
+  color: var(--accent);
+}
+.recent__player {
+  font-weight: 500;
+}
+.recent__pos,
+.recent__team {
+  font-size: 0.82rem;
+  color: var(--text-faint);
+}
+
+/* --- the board ------------------------------------------------------------- */
+
+.board {
+  display: grid;
+  /* Column count is set inline from the team count so every team stays on one
+     row; this is the fallback before that runs. */
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.6rem;
+  align-items: start;
+}
+
+.team-col {
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.team-col.is-full {
+  opacity: 0.72;
+}
+.team-col.is-nominating {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.team-col__flag {
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-align: center;
+  padding: 0.15rem 0;
+}
+
+.team-col__head {
+  padding: 0.6rem 0.7rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.team-col__name {
+  font-weight: 600;
+  font-size: 1rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.team-col__budget {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin-top: 0.15rem;
+}
+.team-col__left {
+  font-size: 1.45rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.team-col__of {
+  font-size: 0.78rem;
+  color: var(--text-faint);
+}
+
+.meter {
+  height: 3px;
+  background: var(--bg-sunk);
+  border-radius: 2px;
+  margin: 0.4rem 0 0.35rem;
+  overflow: hidden;
+}
+.meter__fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+
+.team-col__sub {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.76rem;
+  color: var(--text-faint);
+}
+
+.team-col__picks {
+  list-style: none;
+  margin: 0;
+  padding: 0.3rem 0;
+}
+.pick {
+  display: grid;
+  grid-template-columns: 1.9rem 1fr auto;
+  gap: 0.35rem;
+  align-items: baseline;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.92rem;
+}
+.pick__pos {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+.pick__player {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pick__price {
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.team-col__empty {
+  padding: 0.7rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.team-col__needs {
+  padding: 0.4rem 0.6rem;
+  border-top: 1px dashed var(--border);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
+
+.team-col__left.is-low {
+  color: var(--warn);
+}
+
+/* Bigger everything once there's room -- this is the projector case. */
+@media (min-width: 1500px) {
+  .team-col__name {
+    font-size: 1.1rem;
+  }
+  .team-col__left {
+    font-size: 1.7rem;
+  }
+  .pick {
+    font-size: 0.98rem;
+    padding: 0.24rem 0.7rem;
+  }
+  .team-col__needs {
+    font-size: 0.75rem;
+  }
+  .summary__num {
+    font-size: 1.8rem;
+  }
+  .recent__item {
+    font-size: 1.02rem;
+  }
+}
+
+/* Below this the one-row grid would squeeze columns unreadably thin, so let
+   the board scroll sideways instead of shrinking further. */
+@media (max-width: 1100px) {
+  .board {
+    overflow-x: auto;
+    grid-auto-columns: minmax(150px, 1fr);
+    padding-bottom: 0.5rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .entry__row {
+    flex-wrap: wrap;
+  }
+  .entry__field--grow {
+    flex-basis: 100%;
+  }
+  .summary {
+    gap: 1.25rem;
+  }
+}

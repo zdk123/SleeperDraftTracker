@@ -1,0 +1,14 @@
+{
+  "name": "sleeper-draft-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shared draft board for in-person fantasy football auction drafts",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "players": "node scripts/build-players.mjs"
+  }
+}
